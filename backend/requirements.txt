@@ -3,6 +3,6 @@ uvicorn[standard]==0.30.6
 pandas==2.2.2
 numpy==1.26.4
 scikit-learn==1.5.1
-yfinance==0.2.43
+yfinance==1.4.1
 Pillow==10.4.0
 python-multipart==0.0.9

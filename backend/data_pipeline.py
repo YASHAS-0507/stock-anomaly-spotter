@@ -22,6 +22,11 @@ def fetch_real_data(ticker: str, period: str = "1y") -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No data returned for ticker '{ticker}'")
 
+    # newer yfinance versions sometimes return MultiIndex columns
+    # (e.g. ('Close', 'RELIANCE.NS')) even for a single ticker -- flatten them.
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
     df = df.reset_index()
     df = df.rename(columns={
         "Date": "date",
@@ -31,6 +36,10 @@ def fetch_real_data(ticker: str, period: str = "1y") -> pd.DataFrame:
         "Close": "close",
         "Volume": "volume",
     })
+
+    # guard against any remaining duplicate column names (keep first occurrence)
+    df = df.loc[:, ~df.columns.duplicated()]
+
     df = df[["date", "open", "high", "low", "close", "volume"]]
     return df
 
@@ -89,7 +98,12 @@ def get_price_data(ticker: str, period: str = "1y", allow_synthetic_fallback: bo
     except Exception as e:
         if not allow_synthetic_fallback:
             raise
-        print(f"[data_pipeline] live fetch failed for '{ticker}' ({e}); using synthetic fallback")
+        import traceback
+        print(f"[data_pipeline] LIVE FETCH FAILED for '{ticker}'")
+        print(f"[data_pipeline] exception type: {type(e).__name__}")
+        print(f"[data_pipeline] exception message: {e}")
+        traceback.print_exc()
+        print(f"[data_pipeline] falling back to synthetic data...")
         days = {"1mo": 21, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504}.get(period, 252)
         df = generate_synthetic_data(ticker, days=days)
         return df, True
