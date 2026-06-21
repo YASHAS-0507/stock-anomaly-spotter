@@ -80,6 +80,11 @@ def predict(ticker: str = Query(...), period: str = Query("1y")):
     result = train_direction_model(feature_df)
     latest = predict_latest(result.model, feature_df)
 
+    data_note = (
+        "live market data" if not used_synthetic
+        else "synthetic data (live fetch was unavailable for this request)"
+    )
+
     return {
         "ticker": ticker.upper(),
         "used_synthetic_data": used_synthetic,
@@ -94,9 +99,9 @@ def predict(ticker: str = Query(...), period: str = Query("1y")):
         "feature_importances": result.feature_importances,
         "latest_day_prediction": latest,
         "disclaimer": (
-            "This predicts statistical direction probability on historical/synthetic "
-            "data only. It is a learning project, not financial advice, and should not "
-            "be used to make real trading decisions."
+            f"This predicts statistical direction probability based on {data_note} only. "
+            "It is a learning project, not financial advice, and should not be used to make "
+            "real trading decisions."
         ),
     }
 
