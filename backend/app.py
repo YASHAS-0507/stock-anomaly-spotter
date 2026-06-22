@@ -78,7 +78,7 @@ def predict(ticker: str = Query(...), period: str = Query("1y")):
         raise HTTPException(status_code=400, detail="Not enough data to train a model on this period.")
 
     result = train_direction_model(feature_df)
-    latest = predict_latest(result.model, feature_df)
+    latest = predict_latest(result.model, feature_df, result.selected_features)
 
     data_note = (
         "live market data" if not used_synthetic

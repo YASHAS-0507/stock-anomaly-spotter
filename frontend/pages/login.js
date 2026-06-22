@@ -17,10 +17,7 @@ export default function Login() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Login failed");
-      }
+      if (!res.ok) throw new Error((await res.json()).error || "Incorrect password");
       router.push("/");
     } catch (err) {
       setError(err.message);
@@ -30,33 +27,34 @@ export default function Login() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 380, paddingTop: 120 }}>
-      <div className="header" style={{ display: "block", marginBottom: 32 }}>
-        <div className="title">Stock anomaly spotter</div>
-        <div className="subtitle">Sign in to continue</div>
-      </div>
-
-      <form onSubmit={handleSubmit} className="panel">
-        <div style={{ marginBottom: 16 }}>
-          <label className="card-label" htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ width: "100%", marginTop: 6 }}
-            autoFocus
-          />
+    <div className="login-page">
+      <div className="login-box">
+        <div className="login-logo">
+          <div className="brand-dot" />
+          <div className="login-title">STOCK ANOMALY SPOTTER</div>
         </div>
-        {error && (
-          <div style={{ color: "#f87171", fontSize: 13, marginBottom: 16 }}>{error}</div>
-        )}
-        <button type="submit" disabled={loading} style={{ width: "100%" }}>
-          {loading ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
+
+        <form onSubmit={handleSubmit}>
+          <div className="login-field">
+            <label className="login-label" htmlFor="pw">Access key</label>
+            <input
+              id="pw"
+              type="password"
+              className="login-input"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoFocus
+              placeholder="••••••••"
+            />
+          </div>
+
+          {error && <div className="login-error">⚠ {error}</div>}
+
+          <button type="submit" className="btn-login" disabled={loading}>
+            {loading ? "VERIFYING..." : "ENTER"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

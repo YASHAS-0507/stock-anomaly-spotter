@@ -68,7 +68,56 @@ def add_volume_features(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     df["volume_ratio"] = df["volume"] / df["volume_sma"].replace(0, np.nan)
     df["volume_ratio"] = df["volume_ratio"].fillna(1.0)
     return df
+def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    """
+    MACD (Moving Average Convergence Divergence) -- a momentum indicator
+    that captures the relationship between two EMAs of price. The
+    histogram (macd - signal) often shifts sign before a trend change,
+    which is information the simple SMA crossover doesn't fully capture.
+    """
+    df = df.copy()
+    ema_fast = df["close"].ewm(span=fast, adjust=False).mean()
+    ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    df["macd"] = macd_line
+    df["macd_signal"] = signal_line
+    df["macd_histogram"] = macd_line - signal_line
+    return df
 
+
+def add_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std: float = 2.0) -> pd.DataFrame:
+    """
+    Bollinger Bands -- mean-reversion signal. %B tells us where price
+    sits within its recent volatility band: near 1 = near upper band
+    (potentially overbought), near 0 = near lower band (potentially
+    oversold). This is different information from trend-following
+    indicators like SMA crossover or MACD.
+    """
+    df = df.copy()
+    sma = df["close"].rolling(window).mean()
+    std = df["close"].rolling(window).std()
+    upper = sma + num_std * std
+    lower = sma - num_std * std
+    band_width = (upper - lower).replace(0, np.nan)
+    df["bollinger_pct_b"] = ((df["close"] - lower) / band_width).fillna(0.5)
+    df["bollinger_bandwidth"] = (band_width / sma.replace(0, np.nan)).fillna(0)
+    return df
+
+
+def add_lagged_features(df: pd.DataFrame, columns: list, lags: list = (1, 2, 3)) -> pd.DataFrame:
+    """
+    Adds lagged versions of selected columns (e.g. yesterday's RSI,
+    2-days-ago return). Tree models like RandomForest don't see sequence
+    on their own -- each row is treated independently -- so without
+    lagged features the model only ever sees "today's snapshot" and has
+    no way to learn from short-term momentum/reversal patterns.
+    """
+    df = df.copy()
+    for col in columns:
+        for lag in lags:
+            df[f"{col}_lag{lag}"] = df[col].shift(lag)
+    return df
 
 def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
     """Runs the full feature pipeline in order. Returns a clean dataframe."""
@@ -79,6 +128,9 @@ def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
     out = add_volatility(out)
     out = add_rolling_zscore(out)
     out = add_volume_features(out)
+    out = add_macd(out)
+    out = add_bollinger_bands(out)
+    out = add_lagged_features(out, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
     # the label: did the NEXT day close higher than today? (1 = up, 0 = down)
     out["next_day_up"] = (out["close"].shift(-1) > out["close"]).astype(int)
@@ -94,4 +146,18 @@ FEATURE_COLUMNS = [
     "volatility",
     "return_zscore",
     "volume_ratio",
+    "macd",
+    "macd_signal",
+    "macd_histogram",
+    "bollinger_pct_b",
+    "bollinger_bandwidth",
+    "daily_return_lag1",
+    "daily_return_lag2",
+    "daily_return_lag3",
+    "rsi_lag1",
+    "rsi_lag2",
+    "rsi_lag3",
+    "return_zscore_lag1",
+    "return_zscore_lag2",
+    "return_zscore_lag3",
 ]

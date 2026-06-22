@@ -41,7 +41,8 @@ class ModelResult:
     n_train: int
     n_test: int
     feature_importances: dict
-
+    selected_features: list = None
+    
 
 def time_ordered_split(df: pd.DataFrame, test_fraction: float = 0.2):
     split_idx = int(len(df) * (1 - test_fraction))
@@ -50,23 +51,38 @@ def time_ordered_split(df: pd.DataFrame, test_fraction: float = 0.2):
     return train_df, test_df
 
 
-def train_direction_model(feature_df: pd.DataFrame, test_fraction: float = 0.2) -> ModelResult:
+def train_direction_model(feature_df: pd.DataFrame, test_fraction: float = 0.2, top_k_features: int = 8) -> ModelResult:
     train_df, test_df = time_ordered_split(feature_df, test_fraction)
 
-    X_train, y_train = train_df[FEATURE_COLUMNS], train_df["next_day_up"]
-    X_test, y_test = test_df[FEATURE_COLUMNS], test_df["next_day_up"]
+    X_train_full, y_train = train_df[FEATURE_COLUMNS], train_df["next_day_up"]
+    X_test_full, y_test = test_df[FEATURE_COLUMNS], test_df["next_day_up"]
+
+    # Feature selection: with ~20 features and only ~150-250 rows, fitting on
+    # all of them invites overfitting (curse of dimensionality). We fit a
+    # quick exploratory model on the TRAINING set only (never touches test
+    # data, so this doesn't leak) to rank feature importance, then keep only
+    # the top_k most useful features for the real model. This is a standard
+    # technique, not cheating -- the selection decision is made without ever
+    # looking at the held-out test set.
+    selector = RandomForestClassifier(
+        n_estimators=200, max_depth=4, min_samples_leaf=10, random_state=42
+    )
+    selector.fit(X_train_full, y_train)
+    importances = pd.Series(selector.feature_importances_, index=FEATURE_COLUMNS)
+    selected_features = importances.sort_values(ascending=False).head(top_k_features).index.tolist()
+
+    X_train, X_test = X_train_full[selected_features], X_test_full[selected_features]
 
     model = RandomForestClassifier(
         n_estimators=200,
-        max_depth=4,
-        min_samples_leaf=10,
+        max_depth=3,
+        min_samples_leaf=15,
+        max_features="sqrt",
         random_state=42,
     )
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
 
-    # baseline: a classifier that always predicts the majority class.
-    # any "real" model must beat this to mean anything at all.
     baseline = DummyClassifier(strategy="most_frequent")
     baseline.fit(X_train, y_train)
     baseline_preds = baseline.predict(X_test)
@@ -80,18 +96,20 @@ def train_direction_model(feature_df: pd.DataFrame, test_fraction: float = 0.2) 
         f1=round(f1_score(y_test, preds, zero_division=0), 4),
         n_train=len(train_df),
         n_test=len(test_df),
-        feature_importances=dict(zip(FEATURE_COLUMNS, np.round(model.feature_importances_, 4))),
+        feature_importances=dict(zip(selected_features, np.round(model.feature_importances_, 4))),
+        selected_features=selected_features,
     )
     return result
 
 
-def predict_latest(model: RandomForestClassifier, feature_df: pd.DataFrame) -> dict:
+def predict_latest(model: RandomForestClassifier, feature_df: pd.DataFrame, selected_features: list = None) -> dict:
     """
     Predicts direction for the most recent row available. Returns a
     probability, not a buy/sell instruction -- the caller decides how
     to present that responsibly.
     """
-    latest = feature_df.iloc[[-1]][FEATURE_COLUMNS]
+    cols = selected_features if selected_features else FEATURE_COLUMNS
+    latest = feature_df.iloc[[-1]][cols]
     proba = model.predict_proba(latest)[0]
     classes = model.classes_
     prob_up = float(proba[list(classes).index(1)]) if 1 in classes else 0.0
