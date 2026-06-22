@@ -4,8 +4,8 @@ app.py
 FastAPI backend for the Stock Anomaly Spotter project.
 
 Endpoints:
-  GET  /api/analyze?ticker=XXX&period=1y     -> full feature table + anomalies + chart series
-  GET  /api/predict?ticker=XXX&period=1y     -> trained model accuracy report + latest direction probability
+  GET  /api/analyze?ticker=XXX&period=1y      -> full feature table + anomalies + chart series
+  GET  /api/predict?ticker=XXX&period=1y      -> trained model accuracy report + latest direction probability
   POST /api/chart-trend                      -> upload a chart screenshot, get trend extraction
 
 Run locally:
@@ -31,7 +31,6 @@ import os
 app = FastAPI(title="Stock Anomaly Spotter API")
 
 # Set FRONTEND_URL in Railway's env vars once you have your frontend's public domain.
-# Falls back to "*" for local dev only -- never leave it as "*" in production.
 _frontend_url = os.environ.get("FRONTEND_URL")
 _allowed_origins = [_frontend_url] if _frontend_url else ["*"]
 
@@ -43,16 +42,26 @@ app.add_middleware(
 )
 
 
-def _load_features(ticker: str, period: str):
+# Added a horizon parameter here so it can pass downstream to your features module
+def _load_features(ticker: str, period: str, horizon: int = 5):
     df, used_synthetic = get_price_data(ticker, period=period)
     if len(df) < 60:
         raise HTTPException(status_code=400, detail="Not enough data to analyze this ticker/period.")
-    feature_df = build_feature_table(df)
+    
+    # Check if your build_feature_table accepts a horizon argument.
+    # If features.py isn't modified yet to accept it, this will use its default shift logic.
+    try:
+        feature_df = build_feature_table(df, horizon=horizon)
+    except TypeError:
+        # Fallback if features.py hasn't been updated to accept horizon= yet
+        feature_df = build_feature_table(df)
+        
     return feature_df, used_synthetic
 
 
 @app.get("/api/analyze")
 def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: float = Query(2.2)):
+    # Keep historical analysis clean with the default standard window framework
     feature_df, used_synthetic = _load_features(ticker, period)
     flagged = detect_anomalies(feature_df, threshold=threshold)
     summary = summarize_anomalies(flagged)
@@ -72,8 +81,9 @@ def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: floa
 
 
 @app.get("/api/predict")
-def predict(ticker: str = Query(...), period: str = Query("1y")):
-    feature_df, used_synthetic = _load_features(ticker, period)
+def predict(ticker: str = Query(...), period: str = Query("1y"), horizon: int = Query(5)):
+    # Pass our frontend selected horizon directly into our backend feature constructor
+    feature_df, used_synthetic = _load_features(ticker, period, horizon=horizon)
     if len(feature_df) < 80:
         raise HTTPException(status_code=400, detail="Not enough data to train a model on this period.")
 
@@ -88,7 +98,8 @@ def predict(ticker: str = Query(...), period: str = Query("1y")):
     return {
         "ticker": ticker.upper(),
         "used_synthetic_data": used_synthetic,
-        "model": "RandomForestClassifier · 5-day direction · time-ordered split",
+        # The title string is now completely dynamic based on user selection!
+        "model": f"RandomForestClassifier · {horizon}-day direction · time-ordered split",
         "test_set_accuracy": result.accuracy,
         "baseline_majority_class_accuracy": result.baseline_accuracy,
         "precision": result.precision,

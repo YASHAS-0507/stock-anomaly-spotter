@@ -68,6 +68,8 @@ def add_volume_features(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     df["volume_ratio"] = df["volume"] / df["volume_sma"].replace(0, np.nan)
     df["volume_ratio"] = df["volume_ratio"].fillna(1.0)
     return df
+
+
 def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
     """
     MACD (Moving Average Convergence Divergence) -- a momentum indicator
@@ -119,21 +121,24 @@ def add_lagged_features(df: pd.DataFrame, columns: list, lags: list = (1, 2, 3))
             df[f"{col}_lag{lag}"] = df[col].shift(lag)
     return df
 
-def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
+
+def build_feature_table(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
     """Runs the full feature pipeline in order. Returns a clean dataframe."""
     out = df.copy()
     out = add_returns(out)
     out = add_moving_averages(out)
     out = add_rsi(out)
     out = add_volatility(out)
+    out = out.assign(daily_return=out["daily_return"].fillna(0)) # safety patch for rolling calc
     out = add_rolling_zscore(out)
     out = add_volume_features(out)
     out = add_macd(out)
     out = add_bollinger_bands(out)
     out = add_lagged_features(out, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
-    # the label: did the NEXT day close higher than today? (1 = up, 0 = down)
-    out["next_day_up"] = (out["close"].shift(-5) > out["close"]).astype(int)
+    # --- THIS IS THE LINE YOU ARE CHANGING ---
+    # It replaces the old hardcoded shift with the dynamic horizon variable
+    out["next_day_up"] = (out["close"].shift(-horizon) > out["close"]).astype(int)
 
     out = out.dropna().reset_index(drop=True)
     return out

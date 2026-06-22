@@ -28,6 +28,7 @@ function CustomTooltip({ active, payload, label }) {
 export default function Home() {
   const [ticker, setTicker] = useState("RELIANCE.NS");
   const [period, setPeriod] = useState("1y");
+  const [horizon, setHorizon] = useState("5");
   const [analysis, setAnalysis] = useState(null);
   const [prediction, setPrediction] = useState(null);
   const [chartTrend, setChartTrend] = useState(null);
@@ -36,13 +37,13 @@ export default function Home() {
   const [drag, setDrag] = useState(false);
 
   async function runAnalysis() {
-    setLoading(true);
-    setError(null);
-    try {
-      const [aRes, pRes] = await Promise.all([
-        fetch(`${API_BASE}/api/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-        fetch(`${API_BASE}/api/predict?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-      ]);
+  setLoading(true);
+  setError(null);
+  try {
+    const [aRes, pRes] = await Promise.all([
+      fetch(`${API_BASE}/api/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}`),
+      fetch(`${API_BASE}/api/predict?ticker=${encodeURIComponent(ticker)}&period=${period}&horizon=${horizon}`),
+    ]);
       if (!aRes.ok) throw new Error((await aRes.json()).detail || "Analysis failed");
       if (!pRes.ok) throw new Error((await pRes.json()).detail || "Prediction failed");
       setAnalysis(await aRes.json());
@@ -125,6 +126,11 @@ export default function Home() {
             <option value="6mo">6 months</option>
             <option value="1y">1 year</option>
             <option value="2y">2 years</option>
+          </select>
+          <select className="terminal-select" value={horizon} onChange={e => setHorizon(e.target.value)}>
+            <option value="1">1-Day Horizon</option>
+            <option value="5">5-Day Horizon</option>
+            <option value="10">10-Day Horizon</option>
           </select>
           <button className="btn-run" onClick={runAnalysis} disabled={loading}>
             {loading ? "RUNNING..." : "RUN ANALYSIS"}
