@@ -231,7 +231,7 @@ export default function Home() {
                 {/* LEFT: direction gauge */}
                 <div>
                   <div className="direction-wrap">
-                    <div className="direction-label">Next-day direction probability</div>
+                    <div className="direction-label">5-day direction probability</div>
                     <div className={`direction-arrow ${dir}`}>
                       {dir === "up" ? "↑ UP" : "↓ DOWN"}
                     </div>
