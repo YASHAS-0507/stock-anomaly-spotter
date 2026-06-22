@@ -88,7 +88,7 @@ def predict(ticker: str = Query(...), period: str = Query("1y")):
     return {
         "ticker": ticker.upper(),
         "used_synthetic_data": used_synthetic,
-        "model": "RandomForestClassifier (time-ordered train/test split)",
+        "model": "RandomForestClassifier · 5-day direction · time-ordered split",
         "test_set_accuracy": result.accuracy,
         "baseline_majority_class_accuracy": result.baseline_accuracy,
         "precision": result.precision,

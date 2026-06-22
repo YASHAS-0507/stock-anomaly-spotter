@@ -133,7 +133,7 @@ def build_feature_table(df: pd.DataFrame) -> pd.DataFrame:
     out = add_lagged_features(out, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
     # the label: did the NEXT day close higher than today? (1 = up, 0 = down)
-    out["next_day_up"] = (out["close"].shift(-1) > out["close"]).astype(int)
+    out["next_day_up"] = (out["close"].shift(-5) > out["close"]).astype(int)
 
     out = out.dropna().reset_index(drop=True)
     return out
