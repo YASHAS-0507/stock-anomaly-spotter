@@ -84,7 +84,7 @@ def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: floa
 def predict(ticker: str = Query(...), period: str = Query("1y"), horizon: int = Query(5)):
     # Pass our frontend selected horizon directly into our backend feature constructor
     feature_df, used_synthetic = _load_features(ticker, period, horizon=horizon)
-    if len(feature_df) < 80:
+    if len(feature_df) < 20:
         raise HTTPException(status_code=400, detail="Not enough data to train a model on this period.")
 
     result = train_direction_model(feature_df)
