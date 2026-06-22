@@ -190,7 +190,23 @@ export default function Home() {
                   <LineChart data={chartData} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
                     <CartesianGrid strokeDasharray="2 4" stroke="#1C2332" />
                     <XAxis dataKey="date" stroke="#2A3448" tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                    <YAxis stroke="#2A3448" tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={false} domain={["auto", "auto"]} width={56} tickFormatter={v => `₹${v >= 1000 ? (v/1000).toFixed(1)+"k" : v}`} />
+                    <YAxis 
+                    stroke="#2A3448" 
+                    tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} 
+                    tickLine={false} 
+                    axisLine={false} 
+                    domain={["auto", "auto"]} 
+                    width={64} // Bumped slightly to 64 so 5-digit index strings don't clip off the screen edge
+                  tickFormatter={(v) => {
+                    if (v >= 10000) {
+                      return `₹${(v / 1000).toFixed(0)}k`; // Formats 77150 -> ₹77k (Perfect for Sensex)
+                    }
+                    if (v >= 1000) {
+                      return `₹${(v / 1000).toFixed(1)}k`; // Formats 1341 -> ₹1.3k (Perfect for Reliance)
+                    }
+                      return `₹${Number(v).toFixed(0)}`; // Formats 111.5 -> ₹112 (Clean look for cheaper assets)
+                    }} 
+                  />
                     <Tooltip content={<CustomTooltip />} />
                     {analysis.anomalies.map((a, i) => (
                       <ReferenceLine key={i} x={a.date.slice(5)} stroke={a.anomaly_direction === "spike_up" ? "#00C48C" : "#FF4560"} strokeDasharray="3 3" strokeWidth={1} />
