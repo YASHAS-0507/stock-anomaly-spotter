@@ -13,14 +13,14 @@ import numpy as np
 import pandas as pd
 import math
 
-def clean_data(obj):
-    """Recursively replaces NaN with None to make dictionary JSON compliant."""
+def clean_json_data(obj):
+    """Recursively replaces NaN with None (which becomes 'null' in JSON)."""
     if isinstance(obj, float) and math.isnan(obj):
         return None
     if isinstance(obj, dict):
-        return {k: clean_data(v) for k, v in obj.items()}
+        return {k: clean_json_data(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [clean_data(v) for v in obj]
+        return [clean_json_data(v) for v in obj]
     return obj
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
@@ -249,7 +249,8 @@ def predict(
     test_acc = float(accuracy_score(y_test, xgb_gatekeeper.predict(X_test))) if len(y_test) > 0 else 0.0
     baseline_acc = float(y_test.value_counts().max() / len(y_test)) if len(y_test) > 0 else 0.0
 
-    payload={
+    # Construct your payload
+    payload = {
         "ticker": ticker.upper(),
         "realtime_signal": {"action": signal_action, "status": signal_status, "color": signal_color},
         "used_synthetic_data": used_synthetic,
@@ -263,9 +264,7 @@ def predict(
             "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
-        # ADD THIS LINE:
         "probabilities": probabilities_payload,
-        
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),
             "close_at_execution": float(latest_row_meta["close"].values[0]),
@@ -273,7 +272,9 @@ def predict(
         },
         "disclaimer": "This model maps directional volatility probabilities based on live data. Project for educational use."
     }
-    return clean_data(payload)
+
+    # Clean the data to remove NaNs before returning
+    return clean_json_data(payload)
 
 @app.post("/api/chart-trend")
 async def chart_trend(file: UploadFile = File(...)):
