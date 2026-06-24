@@ -7,3 +7,4 @@ yfinance==1.4.1
 Pillow==10.4.0
 python-multipart==0.0.9
 xgboost==1.7.6
+lightgbm
