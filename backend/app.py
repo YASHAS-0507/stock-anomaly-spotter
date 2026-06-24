@@ -111,7 +111,7 @@ def predict(
     full_calculated_df = add_bollinger_bands(full_calculated_df)
     full_calculated_df = add_lagged_features(full_calculated_df, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
-    # EXACT COLUMN MATCHES MANDATED BY THE FEATURES COMPILATION CONTRACT
+    # Features selected to match available feature dataframe transformations exactly
     feature_features = [
         "return_zscore", "rsi", "macd", "macd_signal", 
         "macd_histogram", "bollinger_bandwidth", "daily_return"
@@ -181,7 +181,7 @@ def predict(
         else "synthetic data (live fetch was unavailable for this request)"
     )
 
-    # 8. Complete Multi-Tier Frontend Mapping Fallback Framework
+    # 8. Multi-Tier Frontend Mapping Layer
     if signal_action == "BUY NOW":
         f_up = prob_price_up
         f_down = 1.0 - prob_price_up
@@ -219,11 +219,12 @@ def predict(
             "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
-        # Top-level fallback representation matching
+        # EXPOSED AT ROOT LEVEL FOR TOP-LEVEL FRONTEND PARSING
         "probabilities": probabilities_payload,
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),
             "close_at_execution": float(latest_row_meta["close"].values[0]),
+            # EXPOSED INSIDE FORECAST FOR NESTED FRONTEND PARSING
             "probabilities": probabilities_payload
         },
         "disclaimer": f"This model maps directional volatility probabilities based on {data_note}. Project for educational use."
