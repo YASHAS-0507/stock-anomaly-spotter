@@ -250,7 +250,9 @@ def predict(
             "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
+        # ADD THIS LINE:
         "probabilities": probabilities_payload,
+        
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),
             "close_at_execution": float(latest_row_meta["close"].values[0]),
