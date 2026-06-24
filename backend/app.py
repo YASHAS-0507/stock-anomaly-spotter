@@ -176,10 +176,28 @@ def predict(
     mapped_dist = {class_mapping.get(k, str(k)): int(v) for k, v in distribution.items()}
 
     # 7. Real-time Inference on the most recent trading sequence
+    # 7. Real-time Inference on the most recent trading sequence
     X_latest = latest_row[feature_features]
     probabilities = model.predict_proba(X_latest)[0]
+    
+    p_sideways = float(probabilities[0])
+    p_up = float(probabilities[1])
+    p_down = float(probabilities[2])
 
-    # Handle dataset notification strings
+    # 8. Real-Time Action Decision Logic Engine
+    if p_up >= 0.45:
+        signal_action = "BUY NOW"
+        signal_status = "BULLISH BREAKOUT DETECTED"
+        signal_color = "#00C48C"
+    elif p_down >= 0.45:
+        signal_action = "STAY OUT / SHORT"
+        signal_status = "BEARISH RISK DETECTED"
+        signal_color = "#FF4560"
+    else:
+        signal_action = "HOLD"
+        signal_status = "MARKET IS SIDEWAYS / NEUTRAL"
+        signal_color = "#FFB800"
+
     data_note = (
         "live market data" if not used_synthetic
         else "synthetic data (live fetch was unavailable for this request)"
@@ -187,6 +205,11 @@ def predict(
 
     return {
         "ticker": ticker.upper(),
+        "realtime_signal": {
+            "action": signal_action,
+            "status": signal_status,
+            "color": signal_color
+        },
         "used_synthetic_data": used_synthetic,
         "model_architecture": f"XGBoost Multi-Class · {horizon}-day Forecast Horizon",
         "configuration": {

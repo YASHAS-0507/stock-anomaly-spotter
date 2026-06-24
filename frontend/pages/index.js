@@ -254,6 +254,37 @@ export default function Home() {
                 <span className="panel-badge">{prediction.model_architecture}</span>
               </div>
 
+              {/* REALTIME ACTION SIGNAL ALERT BANNER */}
+              <div style={{
+                background: "#0D1117",
+                borderLeft: `4px solid ${prediction.realtime_signal.color}`,
+                padding: "16px",
+                borderRadius: "6px",
+                marginBottom: "20px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between"
+              }}>
+                <div>
+                  <div style={{ fontSize: "11px", color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase" }}>Current Trade Recommendation</div>
+                  <div style={{ fontSize: "18px", fontWeight: "bold", color: "#FFFFFF", marginTop: "2px" }}>
+                    {prediction.realtime_signal.status}
+                  </div>
+                </div>
+                <div style={{
+                  background: prediction.realtime_signal.color,
+                  color: "#0D1117",
+                  fontFamily: "var(--mono)",
+                  fontWeight: "900",
+                  padding: "8px 16px",
+                  borderRadius: "4px",
+                  fontSize: "14px",
+                  letterSpacing: "0.5px"
+                }}>
+                  {prediction.realtime_signal.action}
+                </div>
+              </div>
+
               <div className="two-col" style={{ gap: 40, marginBottom: 0 }}>
                 {/* LEFT SIDE: MULTICLASS ODDS DISTRIBUTION */}
                 <div>
