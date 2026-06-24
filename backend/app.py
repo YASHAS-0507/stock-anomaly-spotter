@@ -1,9 +1,8 @@
 """
 app.py
 ------
-FastAPI backend upgraded with a Hierarchical Cascading Pipeline:
-  - Stage 1: XGBoost maps and filters out the dominant "Sideways" noise.
-  - Stage 2: LightGBM performs precision targeting on high-volatility spikes.
+FastAPI backend for the Stock Anomaly Spotter project.
+Upgraded with Binary XGBoost and TabPFN In-Context Transformer Rescue Net.
 """
 
 import shutil
@@ -17,14 +16,17 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from data_pipeline import get_price_data
-from features import build_feature_table
+from features import (
+    build_feature_table, add_returns, add_moving_averages, add_rsi,
+    add_volatility, add_rolling_zscore, add_volume_features, add_macd,
+    add_bollinger_bands, add_lagged_features
+)
 from anomaly import detect_anomalies, summarize_anomalies
 from chart_reader import extract_trend_line
 
-# Try importing the cascading engine dependencies
+# Import explicit optional dependencies for the predictive pipeline
 try:
     import xgboost as xgb
-    import lightgbm as lgb
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score
     CASCADING_ENGINES_AVAILABLE = True
@@ -43,6 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 def _load_features(ticker: str, period: str, horizon: int = 5):
     df, used_synthetic = get_price_data(ticker, period=period)
     if len(df) < 60:
@@ -52,13 +55,13 @@ def _load_features(ticker: str, period: str, horizon: int = 5):
         feature_df = build_feature_table(df, horizon=horizon)
     except TypeError:
         feature_df = build_feature_table(df)
-        
-    return feature_df, used_synthetic
+         
+    return feature_df, used_synthetic, df
 
 
 @app.get("/api/analyze")
 def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: float = Query(2.2)):
-    feature_df, used_synthetic = _load_features(ticker, period)
+    feature_df, used_synthetic, _ = _load_features(ticker, period)
     flagged = detect_anomalies(feature_df, threshold=threshold)
     summary = summarize_anomalies(flagged)
 
@@ -80,162 +83,134 @@ def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: floa
 def predict(
     ticker: str = Query(...), 
     period: str = Query("1y"), 
-    horizon: int = Query(5),
-    spike_threshold: float = Query(0.05)
+    horizon: int = Query(5)
 ):
     if not CASCADING_ENGINES_AVAILABLE:
         raise HTTPException(
             status_code=500, 
-            detail="XGBoost, LightGBM, and scikit-learn are all required. Please check your requirements.txt file."
+            detail="XGBoost and scikit-learn are required for this endpoint."
         )
 
-    # 1. Pipeline preparation
-    feature_df, used_synthetic = _load_features(ticker, period, horizon=horizon)
+    # 1. Load data and feature frame
+    feature_df, used_synthetic, raw_df = _load_features(ticker, period, horizon=horizon)
     feature_df = feature_df.sort_values("date").reset_index(drop=True)
     
     if len(feature_df) < 45:
         raise HTTPException(status_code=400, detail="Insufficient chronological timeline context.")
 
-    # 2. Build target labels (0: Sideways, 1: Spike Up, 2: Spike Down)
-    feature_df["future_close"] = feature_df["close"].shift(-horizon)
-    feature_df["future_return"] = (feature_df["future_close"] - feature_df["close"]) / feature_df["close"]
+    # 2. Re-run indicators on raw data to extract the live row BEFORE target drop truncation
+    full_calculated_df = raw_df.copy().sort_values("date").reset_index(drop=True)
+    full_calculated_df = add_returns(full_calculated_df)
+    full_calculated_df = add_moving_averages(full_calculated_df)
+    full_calculated_df = add_rsi(full_calculated_df)
+    full_calculated_df = add_volatility(full_calculated_df)
+    full_calculated_df["daily_return"] = full_calculated_df["daily_return"].fillna(0)
+    full_calculated_df = add_rolling_zscore(full_calculated_df)
+    full_calculated_df = add_volume_features(full_calculated_df)
+    full_calculated_df = add_macd(full_calculated_df)
+    full_calculated_df = add_bollinger_bands(full_calculated_df)
+    full_calculated_df = add_lagged_features(full_calculated_df, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
-    def label_market_spike(future_ret):
-        if pd.isna(future_ret):
-            return np.nan
-        if future_ret >= spike_threshold:
-            return 1
-        elif future_ret <= -spike_threshold:
-            return 2
-        else:
-            return 0
+    # Features selected to feed into the classification algorithms
+    feature_features = [
+        "return_zscore", "rsi", "macd", "macd_signal", 
+        "macd_histogram", "bollinger_bandwidth", "daily_return"
+    ]
 
-    feature_df["target"] = feature_df["future_return"].apply(label_market_spike)
+    X = feature_df[feature_features]
+    y = feature_df["next_day_up"].astype(int)
 
-    # Cache latest execution row for live inference
-    latest_row = feature_df.iloc[[-1]].copy()
-    train_clean_df = feature_df.dropna(subset=["target"]).copy()
-    
-    if len(train_clean_df) < 25:
-        raise HTTPException(status_code=400, detail="Not enough historical frames to build cross-validation filters.")
+    # Isolate live variables for the upcoming prediction execution
+    X_latest = full_calculated_df[feature_features].iloc[[-1]]
+    latest_row_meta = full_calculated_df.iloc[[-1]]
 
-    # 3. Separate structural parameters
-    all_cols = train_clean_df.columns.tolist()
-    ignore_cols = ["date", "target", "future_close", "future_return", "open", "high", "low", "volume"]
-    feature_features = [c for c in all_cols if c not in ignore_cols and not train_clean_df[c].dtype == object]
-
-    X = train_clean_df[feature_features]
-    y = train_clean_df["target"].astype(int)
-
-    # Chronological Split
+    # 3. Strict Chronological Split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, shuffle=False)
 
-    # --- STAGE 1: XGBOOST GATEKEEPER ---
-    # Convert labels into Binary: 0 = Sideways, 1 = Volatility Warning (Any Spike)
-    y_train_binary = (y_train != 0).astype(int)
-    y_test_binary = (y_test != 0).astype(int)
-
+    # 4. Train XGBoost Gatekeeper
     xgb_gatekeeper = xgb.XGBClassifier(
-        max_depth=3, learning_rate=0.1, n_estimators=50, random_state=42, eval_metric="logloss"
+        max_depth=3, 
+        learning_rate=0.1, 
+        n_estimators=50, 
+        random_state=42, 
+        eval_metric="logloss"
     )
-    xgb_gatekeeper.fit(X_train, y_train_binary)
-    
-    # --- STAGE 2: LIGHTGBM PRECISION SNIPER ---
-    # LightGBM trains specifically on historical non-sideways anomaly frames
-    breakout_mask = (y_train != 0)
-    X_train_breakout = X_train[breakout_mask]
-    y_train_breakout = y_train[breakout_mask]
+    xgb_gatekeeper.fit(X_train, y_train)
 
-    # Fallback if historical spikes are completely empty in the train set split
-    if len(y_train_breakout) < 2:
-        X_train_breakout = X_train
-        y_train_breakout = y_train
+    # 5. Metrics Compilation
+    y_pred = xgb_gatekeeper.predict(X_test)
+    test_acc = float(accuracy_score(y_test, y_pred))
+    majority_class_count = int(y_test.value_counts().max())
+    baseline_acc = float(majority_class_count / len(y_test))
 
-    lgb_sniper = lgb.LGBMClassifier(
-        max_depth=4, learning_rate=0.08, n_estimators=40, random_state=42, verbosity=-1
+    # 6. Live Core Inference
+    prob_price_up = float(xgb_gatekeeper.predict_proba(X_latest)[0][1])
+    pipeline_routing = "XGBoost Core Engine"
+
+    # 7. Execution Cascading + TabPFN Gray-Zone Filter Rescue Net
+    if prob_price_up >= 0.60:
+        signal_action, signal_status, signal_color = "BUY NOW", "STRONG UPWARD MOMENTUM DETECTED", "#00C48C"
+        pipeline_routing = "XGBoost Trend Execution"
+    elif prob_price_up <= 0.40:
+        signal_action, signal_status, signal_color = "SHORT / STAY OUT", "BEARISH DOWNTREND REGIME", "#FF4560"
+        pipeline_routing = "XGBoost Risk Execution"
+    else:
+        # Indecisive Middle Zone (41% - 59%) -> Trigger TabPFN In-Context Rescue Net!
+        try:
+            from tabpfn import TabPFNClassifier
+            tabpfn_net = TabPFNClassifier(device='cpu', N_ensemble_configurations=2)
+            tabpfn_net.fit(X_train, y_train)
+            
+            tabpfn_prob_up = float(tabpfn_net.predict_proba(X_latest)[0][1])
+            
+            if tabpfn_prob_up >= 0.65:
+                signal_action, signal_status, signal_color = "BUY NOW", "BULLISH BREAKOUT (RESCUED BY TABPFN)", "#00C48C"
+                pipeline_routing = "TabPFN In-Context Breakout Rescue"
+                prob_price_up = tabpfn_prob_up
+            elif tabpfn_prob_up <= 0.35:
+                signal_action, signal_status, signal_color = "STAY OUT", "BEARISH TRAP (RESCUED BY TABPFN)", "#FF4560"
+                pipeline_routing = "TabPFN In-Context Risk Rescue"
+                prob_price_up = tabpfn_prob_up
+            else:
+                signal_action, signal_status, signal_color = "HOLD", "TRUE SIDEWAYS MARKET / NEUTRAL ZONE", "#FFB800"
+                pipeline_routing = "XGBoost + TabPFN Consolidated Hold"
+        except Exception:
+            signal_action, signal_status, signal_color = "HOLD", "MARKET IS INDECISIVE", "#FFB800"
+            pipeline_routing = "XGBoost Indecisive (Rescue Framework Fallback)"
+
+    data_note = (
+        "live market data" if not used_synthetic
+        else "synthetic data (live fetch was unavailable for this request)"
     )
-    lgb_sniper.fit(X_train_breakout, y_train_breakout)
-
-    # --- PIPELINE EVALUATION ---
-    # Test accuracy evaluation using the complete cascading logic pass
-    pred_test_binary = xgb_gatekeeper.predict(X_test)
-    final_test_preds = []
-    
-    for idx, is_breakout in enumerate(pred_test_binary):
-        if is_breakout == 0:
-            final_test_preds.append(0)  # Sent straight to sideways
-        else:
-            row_frame = X_test.iloc[[idx]]
-            final_test_preds.append(int(lgb_sniper.predict(row_frame)[0]))
-
-    pipeline_acc = float(accuracy_score(y_test, final_test_preds))
-    baseline_acc = float(int(y_test.value_counts().max()) / len(y_test))
-
-    # --- LIVE CASCADING INFERENCE ---
-    X_latest = latest_row[feature_features]
-    prob_any_breakout = float(xgb_gatekeeper.predict_proba(X_latest)[0][1])
-
-    # Cascade execution sequence routing
-    if prob_any_breakout < 0.40:
-        p_sideways = 1.0 - prob_any_breakout
-        p_up = prob_any_breakout * 0.5
-        p_down = prob_any_breakout * 0.5
-    else:
-        lgb_probs = lgb_sniper.predict_proba(X_latest)[0]
-        # Map class indexes cleanly back safely depending on fallback shapes
-        if len(lgb_probs) == 3:
-            p_sideways = float(lgb_probs[0]) * (1.0 - prob_any_breakout)
-            p_up = float(lgb_probs[1])
-            p_down = float(lgb_probs[2])
-        else:
-            p_sideways = 1.0 - prob_any_breakout
-            p_up = float(lgb_probs[0]) if 1 in lgb_sniper.classes_ else 0.0
-            p_down = float(lgb_probs[1]) if 2 in lgb_sniper.classes_ else (float(lgb_probs[0]) if 2 in lgb_sniper.classes_ else 0.0)
-
-    # Re-normalize array layout weights to add up to exactly 100%
-    total_w = p_sideways + p_up + p_down
-    p_sideways, p_up, p_down = p_sideways / total_w, p_up / total_w, p_down / total_w
-
-    # Determine real-time action status alerts
-    if p_up >= 0.45:
-        signal_action, signal_status, signal_color = "BUY NOW", "BULLISH BREAKOUT DETECTED", "#00C48C"
-    elif p_down >= 0.45:
-        signal_action, signal_status, signal_color = "STAY OUT / SHORT", "BEARISH RISK DETECTED", "#FF4560"
-    else:
-        signal_action, signal_status, signal_color = "HOLD", "MARKET IS SIDEWAYS / NEUTRAL", "#FFB800"
-
-    distribution = y.value_counts().to_dict()
-    mapped_dist = {"sideways": int(distribution.get(0, 0)), "spike_up": int(distribution.get(1, 0)), "spike_down": int(distribution.get(2, 0))}
 
     return {
         "ticker": ticker.upper(),
-        "used_synthetic_data": used_synthetic,
-        "model_architecture": f"Hierarchical Ensemble: XGBoost (Gatekeeper) + LightGBM (Sniper)",
-        "configuration": {
-            "horizon_days": horizon,
-            "spike_percentage_threshold": f"{round(spike_threshold * 100, 1)}%"
-        },
         "realtime_signal": {
             "action": signal_action,
             "status": signal_status,
             "color": signal_color
         },
-        "historical_distribution": mapped_dist,
+        "used_synthetic_data": used_synthetic,
+        "model_architecture": "XGBoost + TabPFN In-Context Cascading Network",
+        "pipeline_routing_execution": pipeline_routing,
+        "configuration": {
+            "horizon_days": horizon
+        },
         "metrics": {
-            "test_set_accuracy": round(pipeline_acc, 4),
+            "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
         "latest_day_forecast": {
-            "date": str(latest_row["date"].values[0]),
-            "close_at_execution": float(latest_row["close"].values[0]),
+            "date": str(latest_row_meta["date"].values[0]),
+            "close_at_execution": float(latest_row_meta["close"].values[0]),
             "probabilities": {
-                "sideways": round(p_sideways, 4),
-                "spike_up": round(p_up, 4),
-                "spike_down": round(p_down, 4)
+                "probability_up": round(prob_price_up, 4),
+                "probability_down": round(1.0 - prob_price_up, 4)
             }
         },
-        "disclaimer": "Dual-engine statistical indicator cascade. Designed as an educational engineering blueprint."
+        "disclaimer": f"This model maps directional volatility probabilities based on {data_note}. Project for educational use."
     }
+
 
 @app.post("/api/chart-trend")
 async def chart_trend(file: UploadFile = File(...)):
@@ -256,6 +231,7 @@ async def chart_trend(file: UploadFile = File(...)):
 
     return result
 
+
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "cascading-anomaly-engine"}
+    return {"status": "ok", "service": "stock-anomaly-spotter"}

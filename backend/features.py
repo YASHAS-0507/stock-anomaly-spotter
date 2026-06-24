@@ -3,10 +3,6 @@ features.py
 ------------
 Turns raw OHLCV data into the technical-indicator features used by both
 the anomaly detector and the prediction model.
-
-Everything here is standard, well-known technical analysis -- nothing
-exotic, on purpose. The point of the project is to be honest about what
-these features can and can't predict.
 """
 
 import numpy as np
@@ -51,8 +47,6 @@ def add_volatility(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 def add_rolling_zscore(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
     """
     Rolling z-score of daily return -- this is the anomaly signal.
-    A day is "anomalous" if its return is many standard deviations away
-    from the recent local mean/std, regardless of overall market direction.
     """
     df = df.copy()
     roll_mean = df["daily_return"].rolling(window).mean()
@@ -71,12 +65,6 @@ def add_volume_features(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 
 
 def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
-    """
-    MACD (Moving Average Convergence Divergence) -- a momentum indicator
-    that captures the relationship between two EMAs of price. The
-    histogram (macd - signal) often shifts sign before a trend change,
-    which is information the simple SMA crossover doesn't fully capture.
-    """
     df = df.copy()
     ema_fast = df["close"].ewm(span=fast, adjust=False).mean()
     ema_slow = df["close"].ewm(span=slow, adjust=False).mean()
@@ -89,13 +77,6 @@ def add_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) 
 
 
 def add_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std: float = 2.0) -> pd.DataFrame:
-    """
-    Bollinger Bands -- mean-reversion signal. %B tells us where price
-    sits within its recent volatility band: near 1 = near upper band
-    (potentially overbought), near 0 = near lower band (potentially
-    oversold). This is different information from trend-following
-    indicators like SMA crossover or MACD.
-    """
     df = df.copy()
     sma = df["close"].rolling(window).mean()
     std = df["close"].rolling(window).std()
@@ -108,13 +89,6 @@ def add_bollinger_bands(df: pd.DataFrame, window: int = 20, num_std: float = 2.0
 
 
 def add_lagged_features(df: pd.DataFrame, columns: list, lags: list = (1, 2, 3)) -> pd.DataFrame:
-    """
-    Adds lagged versions of selected columns (e.g. yesterday's RSI,
-    2-days-ago return). Tree models like RandomForest don't see sequence
-    on their own -- each row is treated independently -- so without
-    lagged features the model only ever sees "today's snapshot" and has
-    no way to learn from short-term momentum/reversal patterns.
-    """
     df = df.copy()
     for col in columns:
         for lag in lags:
@@ -123,25 +97,34 @@ def add_lagged_features(df: pd.DataFrame, columns: list, lags: list = (1, 2, 3))
 
 
 def build_feature_table(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
-    """Runs the full feature pipeline in order. Returns a clean dataframe."""
-    out = df.copy()
+    """
+    Runs the full feature engine pipeline sequentially. 
+    Appends advanced technical indicators and dynamically labels targets.
+    """
+    out = df.copy().sort_values("date").reset_index(drop=True)
+    
     out = add_returns(out)
     out = add_moving_averages(out)
     out = add_rsi(out)
     out = add_volatility(out)
-    out = out.assign(daily_return=out["daily_return"].fillna(0)) # safety patch for rolling calc
+    
+    out["daily_return"] = out["daily_return"].fillna(0)
+    
     out = add_rolling_zscore(out)
     out = add_volume_features(out)
     out = add_macd(out)
     out = add_bollinger_bands(out)
-    out = add_lagged_features(out, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
+    
+    out = add_lagged_features(
+        out, 
+        columns=["daily_return", "rsi", "return_zscore"], 
+        lags=(1, 2, 3)
+    )
 
-    # --- THIS IS THE LINE YOU ARE CHANGING ---
-    # It replaces the old hardcoded shift with the dynamic horizon variable
+    # Dynamic Binary Target Formulation
     out["next_day_up"] = (out["close"].shift(-horizon) > out["close"]).astype(int)
 
-    out = out.dropna().reset_index(drop=True)
-    return out
+    return out.dropna().reset_index(drop=True)
 
 
 FEATURE_COLUMNS = [
