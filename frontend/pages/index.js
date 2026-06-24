@@ -161,9 +161,11 @@ export default function Home() {
             </div>
             <div className="stat-card">
               <div className="stat-label">Anomalies detected</div>
-              <div className="stat-value">{analysis.anomaly_summary.count}</div>
+              <div className="stat-value">
+                {analysis?.anomaly_summary?.count ?? 0}
+              </div>
               <div className="stat-sub">
-                ↑{analysis.anomaly_summary.spike_up} spike up &nbsp;·&nbsp; ↓{analysis.anomaly_summary.spike_down} spike down
+                Volatility hotspots identified using rolling z-score anomaly detection
               </div>
             </div>
             <div className="stat-card">
@@ -350,11 +352,11 @@ export default function Home() {
                   </div>
                   <div className="model-stat">
                     <div className="model-stat-label">Historical Ups</div>
-                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction.historical_distribution.spike_up ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
+                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction?.historical_distribution?.spike_up ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
                   </div>
                   <div className="model-stat">
                     <div className="model-stat-label">Historical Downs</div>
-                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction.historical_distribution.spike_down ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
+                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction?.historical_distribution?.spike_down ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
                   </div>
                 </div>
               </div>
