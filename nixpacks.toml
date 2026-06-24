@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = ["libgomp1"]
+
+[phases.install]
+cmds = ["python -m venv .venv && .venv/bin/pip install -r backend/requirements.txt"]
