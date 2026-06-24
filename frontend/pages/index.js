@@ -37,13 +37,13 @@ export default function Home() {
   const [drag, setDrag] = useState(false);
 
   async function runAnalysis() {
-  setLoading(true);
-  setError(null);
-  try {
-    const [aRes, pRes] = await Promise.all([
-      fetch(`${API_BASE}/api/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}`),
-      fetch(`${API_BASE}/api/predict?ticker=${encodeURIComponent(ticker)}&period=${period}&horizon=${horizon}`),
-    ]);
+    setLoading(true);
+    setError(null);
+    try {
+      const [aRes, pRes] = await Promise.all([
+        fetch(`${API_BASE}/api/analyze?ticker=${encodeURIComponent(ticker)}&period=${period}`),
+        fetch(`${API_BASE}/api/predict?ticker=${encodeURIComponent(ticker)}&period=${period}&horizon=${horizon}`),
+      ]);
       if (!aRes.ok) throw new Error((await aRes.json()).detail || "Analysis failed");
       if (!pRes.ok) throw new Error((await pRes.json()).detail || "Prediction failed");
       setAnalysis(await aRes.json());
@@ -75,14 +75,21 @@ export default function Home() {
     z: analysis.series.return_zscore[i],
   }));
 
-  const anomalyDates = new Set(analysis?.anomalies.map(a => a.date.slice(5)));
+  // Safely extract multiclass probabilities from the upgraded backend response
+  const probSideways = prediction?.latest_day_forecast?.probabilities?.sideways ?? 0;
+  const probSpikeUp = prediction?.latest_day_forecast?.probabilities?.spike_up ?? 0;
+  const probSpikeDown = prediction?.latest_day_forecast?.probabilities?.spike_down ?? 0;
 
-  const probUp = prediction?.latest_day_prediction.prob_up ?? 0.5;
-  const dir = prediction?.latest_day_prediction.predicted_direction;
-  const accBeat = prediction && prediction.test_set_accuracy > prediction.baseline_majority_class_accuracy;
-  const accTie = prediction && prediction.test_set_accuracy === prediction.baseline_majority_class_accuracy;
+  // Determine the highest probable direction class to highlight
+  let dominantClass = "sideways";
+  let maxProb = probSideways;
+  if (probSpikeUp > maxProb) { dominantClass = "spike_up"; maxProb = probSpikeUp; }
+  if (probSpikeDown > maxProb) { dominantClass = "spike_down"; maxProb = probSpikeDown; }
+
+  const accBeat = prediction && prediction.metrics.test_set_accuracy > prediction.metrics.baseline_majority_accuracy;
+  const accTie = prediction && prediction.metrics.test_set_accuracy === prediction.metrics.baseline_majority_accuracy;
   const accDiff = prediction
-    ? ((prediction.test_set_accuracy - prediction.baseline_majority_class_accuracy) * 100).toFixed(1)
+    ? ((prediction.metrics.test_set_accuracy - prediction.metrics.baseline_majority_accuracy) * 100).toFixed(1)
     : 0;
 
   return (
@@ -108,41 +115,38 @@ export default function Home() {
       </div>
 
       {/* TERMINAL INPUT */}
-      {/* TERMINAL INPUT */}
-<div className="terminal-section">
-  <div className="terminal-label">Enter ticker symbol</div>
-  <div className="terminal-row">
-    <div className="terminal-input-wrap">
-      <span className="terminal-prompt">$</span>
-      <input
-        className="terminal-input"
-        value={ticker}
-        onChange={e => setTicker(e.target.value)}
-        onKeyDown={e => e.key === "Enter" && !loading && runAnalysis()}
-        placeholder="e.g. RELIANCE.NS or AAPL"
-      />
-    </div>
-    
-    {/* TIME SNAPSHOT DROP-DOWN */}
-    <select className="terminal-select" value={period} onChange={e => setPeriod(e.target.value)}>
-      <option value="3mo">3 months</option>
-      <option value="6mo">6 months</option>
-      <option value="1y">1 year</option>
-      <option value="2y">2 years</option>
-    </select>
+      <div className="terminal-section">
+        <div className="terminal-label">Enter ticker symbol</div>
+        <div className="terminal-row">
+          <div className="terminal-input-wrap">
+            <span className="terminal-prompt">$</span>
+            <input
+              className="terminal-input"
+              value={ticker}
+              onChange={e => setTicker(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && !loading && runAnalysis()}
+              placeholder="e.g. RELIANCE.NS or AAPL"
+            />
+          </div>
+          
+          <select className="terminal-select" value={period} onChange={e => setPeriod(e.target.value)}>
+            <option value="3mo">3 months</option>
+            <option value="6mo">6 months</option>
+            <option value="1y">1 year</option>
+            <option value="2y">2 years</option>
+          </select>
 
-    {/* NEW PREDICTION HORIZON DROP-DOWN */}
-    <select className="terminal-select" value={horizon} onChange={e => setHorizon(e.target.value)}>
-      <option value="1">1-Day Horizon</option>
-      <option value="5">5-Day Horizon</option>
-      <option value="10">10-Day Horizon</option>
-    </select>
+          <select className="terminal-select" value={horizon} onChange={e => setHorizon(e.target.value)}>
+            <option value="1">1-Day Horizon</option>
+            <option value="5">5-Day Horizon</option>
+            <option value="10">10-Day Horizon</option>
+          </select>
 
-    <button className="btn-run" onClick={runAnalysis} disabled={loading}>
-      {loading ? "RUNNING..." : "RUN ANALYSIS"}
-    </button>
-  </div>
-</div>
+          <button className="btn-run" onClick={runAnalysis} disabled={loading}>
+            {loading ? "RUNNING..." : "RUN ANALYSIS"}
+          </button>
+        </div>
+      </div>
 
       {error && <div className="error-bar">⚠ {error}</div>}
 
@@ -191,22 +195,18 @@ export default function Home() {
                     <CartesianGrid strokeDasharray="2 4" stroke="#1C2332" />
                     <XAxis dataKey="date" stroke="#2A3448" tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
                     <YAxis 
-                    stroke="#2A3448" 
-                    tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} 
-                    tickLine={false} 
-                    axisLine={false} 
-                    domain={["auto", "auto"]} 
-                    width={64} // Bumped slightly to 64 so 5-digit index strings don't clip off the screen edge
-                  tickFormatter={(v) => {
-                    if (v >= 10000) {
-                      return `₹${(v / 1000).toFixed(0)}k`; // Formats 77150 -> ₹77k (Perfect for Sensex)
-                    }
-                    if (v >= 1000) {
-                      return `₹${(v / 1000).toFixed(1)}k`; // Formats 1341 -> ₹1.3k (Perfect for Reliance)
-                    }
-                      return `₹${Number(v).toFixed(0)}`; // Formats 111.5 -> ₹112 (Clean look for cheaper assets)
-                    }} 
-                  />
+                      stroke="#2A3448" 
+                      tick={{ fill: "#4A5568", fontSize: 10, fontFamily: "JetBrains Mono" }} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      domain={["auto", "auto"]} 
+                      width={64}
+                      tickFormatter={(v) => {
+                        if (v >= 10000) return `₹${(v / 1000).toFixed(0)}k`;
+                        if (v >= 1000) return `₹${(v / 1000).toFixed(1)}k`;
+                        return `₹${Number(v).toFixed(0)}`;
+                      }} 
+                    />
                     <Tooltip content={<CustomTooltip />} />
                     {analysis.anomalies.map((a, i) => (
                       <ReferenceLine key={i} x={a.date.slice(5)} stroke={a.anomaly_direction === "spike_up" ? "#00C48C" : "#FF4560"} strokeDasharray="3 3" strokeWidth={1} />
@@ -244,38 +244,62 @@ export default function Home() {
             </div>
           </div>
 
-          {/* SPACER */}
           <div style={{ height: 16 }} />
 
-          {/* MODEL PANEL */}
+          {/* UPGRADED MULTICLASS MODEL PANEL */}
           {prediction && (
             <div className="panel">
               <div className="panel-head">
-                <span className="panel-title">Direction model</span>
-                <span className="panel-badge">RandomForest · time-ordered split</span>
+                <span className="panel-title">Breakout Forecasting Model</span>
+                <span className="panel-badge">{prediction.model_architecture}</span>
               </div>
 
-              <div className="two-col" style={{ gap: 20, marginBottom: 0 }}>
-                {/* LEFT: direction gauge */}
+              <div className="two-col" style={{ gap: 40, marginBottom: 0 }}>
+                {/* LEFT SIDE: MULTICLASS ODDS DISTRIBUTION */}
                 <div>
-                  <div className="direction-wrap">
-                    <div className="direction-label">5-day direction probability</div>
-                    <div className={`direction-arrow ${dir}`}>
-                      {dir === "up" ? "↑ UP" : "↓ DOWN"}
+                  <div className="direction-wrap" style={{ display: "flex", flexDirection: "column", gap: "12px", background: "#0D1117", padding: "16px", borderRadius: "8px" }}>
+                    <div className="direction-label" style={{ fontSize: "12px", color: "var(--text-2)", fontFamily: "var(--mono)" }}>
+                      Execution Target Forecast ({prediction.configuration.horizon_days}-day threshold: {prediction.configuration.spike_percentage_threshold})
                     </div>
-                    <div className="direction-bar-bg">
-                      <div className="direction-bar-fill" style={{ width: `${probUp * 100}%` }} />
+                    
+                    {/* Spike Up Bar */}
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", justifyContent: "between", fontSize: "12px", marginBottom: "4px" }}>
+                        <span style={{ color: dominantClass === "spike_up" ? "#00C48C" : "var(--text-2)", fontWeight: dominantClass === "spike_up" ? "600" : "400" }}>🟢 Spike Up</span>
+                        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "#00C48C", fontWeight: "bold" }}>{(probSpikeUp * 100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{ width: "100%", background: "#1C2332", height: "8px", borderRadius: "4px", overflow: "hidden" }}>
+                        <div style={{ width: `${probSpikeUp * 100}%`, background: "#00C48C", height: "100%" }}></div>
+                      </div>
                     </div>
-                    <div className="direction-meta">
-                      <span style={{ color: "var(--red)", fontSize: 11 }}>↓ {(prediction.latest_day_prediction.prob_down * 100).toFixed(1)}%</span>
-                      <span style={{ color: "var(--green)", fontSize: 11 }}>↑ {(probUp * 100).toFixed(1)}%</span>
+
+                    {/* Sideways Bar */}
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", justifyContent: "between", fontSize: "12px", marginBottom: "4px" }}>
+                        <span style={{ color: dominantClass === "sideways" ? "#FFB800" : "var(--text-2)", fontWeight: dominantClass === "sideways" ? "600" : "400" }}>🟡 Sideways / Neutral</span>
+                        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "#FFB800", fontWeight: "bold" }}>{(probSideways * 100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{ width: "100%", background: "#1C2332", height: "8px", borderRadius: "4px", overflow: "hidden" }}>
+                        <div style={{ width: `${probSideways * 100}%`, background: "#FFB800", height: "100%" }}></div>
+                      </div>
+                    </div>
+
+                    {/* Spike Down Bar */}
+                    <div style={{ width: "100%" }}>
+                      <div style={{ display: "flex", justifyContent: "between", fontSize: "12px", marginBottom: "4px" }}>
+                        <span style={{ color: dominantClass === "spike_down" ? "#FF4560" : "var(--text-2)", fontWeight: dominantClass === "spike_down" ? "600" : "400" }}>🔴 Spike Down</span>
+                        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", color: "#FF4560", fontWeight: "bold" }}>{(probSpikeDown * 100).toFixed(1)}%</span>
+                      </div>
+                      <div style={{ width: "100%", background: "#1C2332", height: "8px", borderRadius: "4px", overflow: "hidden" }}>
+                        <div style={{ width: `${probSpikeDown * 100}%`, background: "#FF4560", height: "100%" }}></div>
+                      </div>
                     </div>
                   </div>
 
-                  <div className="vs-row">
+                  <div className="vs-row" style={{ marginTop: "12px" }}>
                     <span style={{ color: "var(--text-2)", marginRight: 4 }}>Model vs baseline:</span>
                     {accTie
-                      ? <span className="tie">= tied at {(prediction.test_set_accuracy * 100).toFixed(1)}%</span>
+                      ? <span className="tie">= tied at {(prediction.metrics.test_set_accuracy * 100).toFixed(1)}%</span>
                       : accBeat
                         ? <span className="beat">+{accDiff}pp over baseline</span>
                         : <span className="miss">{accDiff}pp vs baseline</span>
@@ -283,23 +307,23 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* RIGHT: accuracy metrics */}
+                {/* RIGHT SIDE: METRIC ANALYSIS BADGES */}
                 <div className="model-grid">
                   <div className="model-stat">
-                    <div className="model-stat-label">Test accuracy</div>
-                    <div className="model-stat-val">{(prediction.test_set_accuracy * 100).toFixed(1)}<span style={{ fontSize: 14 }}>%</span></div>
+                    <div className="model-stat-label">Test Accuracy</div>
+                    <div className="model-stat-val">{(prediction.metrics.test_set_accuracy * 100).toFixed(1)}<span style={{ fontSize: 14 }}>%</span></div>
                   </div>
                   <div className="model-stat">
-                    <div className="model-stat-label">Baseline</div>
-                    <div className="model-stat-val" style={{ color: "var(--text-3)" }}>{(prediction.baseline_majority_class_accuracy * 100).toFixed(1)}<span style={{ fontSize: 14 }}>%</span></div>
+                    <div className="model-stat-label">Baseline Class</div>
+                    <div className="model-stat-val" style={{ color: "var(--text-3)" }}>{(prediction.metrics.baseline_majority_accuracy * 100).toFixed(1)}<span style={{ fontSize: 14 }}>%</span></div>
                   </div>
                   <div className="model-stat">
-                    <div className="model-stat-label">Precision</div>
-                    <div className="model-stat-val">{(prediction.precision * 100).toFixed(0)}<span style={{ fontSize: 14 }}>%</span></div>
+                    <div className="model-stat-label">Historical Ups</div>
+                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction.historical_distribution.spike_up ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
                   </div>
                   <div className="model-stat">
-                    <div className="model-stat-label">F1 score</div>
-                    <div className="model-stat-val">{prediction.f1_score}</div>
+                    <div className="model-stat-label">Historical Downs</div>
+                    <div className="model-stat-val" style={{ fontSize: 20, color: "var(--text-2)" }}>{prediction.historical_distribution.spike_down ?? 0}<span style={{ fontSize: 12, color: "var(--text-3)", marginLeft: 4 }}>days</span></div>
                   </div>
                 </div>
               </div>
