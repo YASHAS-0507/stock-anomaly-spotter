@@ -11,6 +11,17 @@ from pathlib import Path
 import os
 import numpy as np
 import pandas as pd
+import math
+
+def clean_data(obj):
+    """Recursively replaces NaN with None to make dictionary JSON compliant."""
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: clean_data(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [clean_data(v) for v in obj]
+    return obj
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -262,7 +273,7 @@ def predict(
         },
         "disclaimer": "This model maps directional volatility probabilities based on live data. Project for educational use."
     }
-
+    return clean_data(payload)
 
 @app.post("/api/chart-trend")
 async def chart_trend(file: UploadFile = File(...)):

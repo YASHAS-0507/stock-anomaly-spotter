@@ -10,7 +10,7 @@ import pandas as pd
 
 def add_returns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["daily_return"] = df["close"].pct_change()
+    df["daily_return"] = df["close"].pct_change().fillna(0.0)
     df["log_return"] = np.log(df["close"] / df["close"].shift(1))
     return df
 
