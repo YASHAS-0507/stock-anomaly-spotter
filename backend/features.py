@@ -1,8 +1,7 @@
 """
 features.py
 ------------
-Turns raw OHLCV data into the technical-indicator features used by both
-the anomaly detector and the prediction model.
+Turns raw OHLCV data into technical-indicator features.
 """
 
 import numpy as np
@@ -25,7 +24,6 @@ def add_moving_averages(df: pd.DataFrame, short: int = 10, long: int = 30) -> pd
 
 
 def add_rsi(df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
-    """Relative Strength Index -- classic momentum oscillator, 0-100."""
     df = df.copy()
     delta = df["close"].diff()
     gain = delta.clip(lower=0)
@@ -45,9 +43,6 @@ def add_volatility(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
 
 
 def add_rolling_zscore(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
-    """
-    Rolling z-score of daily return -- this is the anomaly signal.
-    """
     df = df.copy()
     roll_mean = df["daily_return"].rolling(window).mean()
     roll_std = df["daily_return"].rolling(window).std().replace(0, np.nan)
@@ -97,10 +92,6 @@ def add_lagged_features(df: pd.DataFrame, columns: list, lags: list = (1, 2, 3))
 
 
 def build_feature_table(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
-    """
-    Runs the full feature engine pipeline sequentially. 
-    Appends advanced technical indicators and dynamically labels targets.
-    """
     out = df.copy().sort_values("date").reset_index(drop=True)
     
     out = add_returns(out)
@@ -121,31 +112,15 @@ def build_feature_table(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
         lags=(1, 2, 3)
     )
 
-    # Dynamic Binary Target Formulation
     out["next_day_up"] = (out["close"].shift(-horizon) > out["close"]).astype(int)
 
     return out.dropna().reset_index(drop=True)
 
 
 FEATURE_COLUMNS = [
-    "daily_return",
-    "sma_cross",
-    "rsi",
-    "volatility",
-    "return_zscore",
-    "volume_ratio",
-    "macd",
-    "macd_signal",
-    "macd_histogram",
-    "bollinger_pct_b",
-    "bollinger_bandwidth",
-    "daily_return_lag1",
-    "daily_return_lag2",
-    "daily_return_lag3",
-    "rsi_lag1",
-    "rsi_lag2",
-    "rsi_lag3",
-    "return_zscore_lag1",
-    "return_zscore_lag2",
-    "return_zscore_lag3",
+    "daily_return", "sma_cross", "rsi", "volatility", "return_zscore",
+    "volume_ratio", "macd", "macd_signal", "macd_histogram", "bollinger_pct_b",
+    "bollinger_bandwidth", "daily_return_lag1", "daily_return_lag2",
+    "daily_return_lag3", "rsi_lag1", "rsi_lag2", "rsi_lag3",
+    "return_zscore_lag1", "return_zscore_lag2", "return_zscore_lag3"
 ]

@@ -2,8 +2,6 @@
 app.py
 ------
 FastAPI backend for the Stock Anomaly Spotter project.
-Upgraded with Binary XGBoost and TabPFN In-Context Transformer Rescue Net.
-Backward compatible with original multi-class frontend payload keys.
 """
 
 import shutil
@@ -100,7 +98,7 @@ def predict(
     if len(feature_df) < 45:
         raise HTTPException(status_code=400, detail="Insufficient chronological timeline context.")
 
-    # 2. Re-run indicators on raw data to extract the live row BEFORE target drop truncation
+    # 2. Re-run indicators on raw data to extract the live row safely
     full_calculated_df = raw_df.copy().sort_values("date").reset_index(drop=True)
     full_calculated_df = add_returns(full_calculated_df)
     full_calculated_df = add_moving_averages(full_calculated_df)
@@ -113,7 +111,7 @@ def predict(
     full_calculated_df = add_bollinger_bands(full_calculated_df)
     full_calculated_df = add_lagged_features(full_calculated_df, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
 
-    # Features selected to feed into the classification algorithms
+    # EXACT COLUMN MATCHES MANDATED BY THE FEATURES COMPILATION CONTRACT
     feature_features = [
         "return_zscore", "rsi", "macd", "macd_signal", 
         "macd_histogram", "bollinger_bandwidth", "daily_return"
@@ -122,7 +120,6 @@ def predict(
     X = feature_df[feature_features]
     y = feature_df["next_day_up"].astype(int)
 
-    # Isolate live variables for the upcoming prediction execution
     X_latest = full_calculated_df[feature_features].iloc[[-1]]
     latest_row_meta = full_calculated_df.iloc[[-1]]
 
@@ -157,7 +154,6 @@ def predict(
         signal_action, signal_status, signal_color = "SHORT / STAY OUT", "BEARISH DOWNTREND REGIME", "#FF4560"
         pipeline_routing = "XGBoost Risk Execution"
     else:
-        # Indecisive Middle Zone (41% - 59%) -> Trigger TabPFN In-Context Rescue Net!
         try:
             from tabpfn import TabPFNClassifier
             tabpfn_net = TabPFNClassifier(device='cpu', N_ensemble_configurations=2)
@@ -185,21 +181,25 @@ def predict(
         else "synthetic data (live fetch was unavailable for this request)"
     )
 
-    # 8. Frontend Interface Compatibility Mapping Layer
-    # We map our precise continuous probabilities back into the keys the frontend is rendering
+    # 8. Complete Multi-Tier Frontend Mapping Fallback Framework
     if signal_action == "BUY NOW":
         f_up = prob_price_up
         f_down = 1.0 - prob_price_up
         f_sideways = 0.0
-    elif signal_action == "SHORT / STAY OUT" or signal_action == "STAY OUT":
+    elif "STAY OUT" in signal_action or "SHORT" in signal_action:
         f_up = prob_price_up
         f_down = 1.0 - prob_price_up
         f_sideways = 0.0
     else:
-        # Balanced or consolidation phase representation
         f_up = prob_price_up * 0.5
         f_down = (1.0 - prob_price_up) * 0.5
         f_sideways = 0.5
+
+    probabilities_payload = {
+        "sideways": round(f_sideways, 4),
+        "spike_up": round(f_up, 4),
+        "spike_down": round(f_down, 4)
+    }
 
     return {
         "ticker": ticker.upper(),
@@ -212,21 +212,19 @@ def predict(
         "model_architecture": "XGBoost + TabPFN In-Context Cascading Network",
         "pipeline_routing_execution": pipeline_routing,
         "configuration": {
-            "horizon_days": horizon
+            "horizon_days": horizon,
+            "spike_percentage_threshold": f"{round(spike_threshold * 100, 1)}%"
         },
         "metrics": {
             "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
+        # Top-level fallback representation matching
+        "probabilities": probabilities_payload,
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),
             "close_at_execution": float(latest_row_meta["close"].values[0]),
-            # --- CRITICAL FRONTEND FIX: Restoring legacy keys to satisfy UI reading parameters ---
-            "probabilities": {
-                "sideways": round(f_sideways, 4),
-                "spike_up": round(f_up, 4),
-                "spike_down": round(f_down, 4)
-            }
+            "probabilities": probabilities_payload
         },
         "disclaimer": f"This model maps directional volatility probabilities based on {data_note}. Project for educational use."
     }
