@@ -42,7 +42,9 @@ _allowed_origins = [_frontend_url] if _frontend_url else ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_allowed_origins,
+    # REPLACE with your actual frontend URL (no trailing slash)
+    allow_origins=["https://selfless-intuition-production.up.railway.app"], 
+    allow_credentials=True, # Added this to handle session/credential requests
     allow_methods=["*"],
     allow_headers=["*"],
 )
