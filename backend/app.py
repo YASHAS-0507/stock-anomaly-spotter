@@ -3,6 +3,7 @@ app.py
 ------
 FastAPI backend for the Stock Anomaly Spotter project.
 Upgraded with Binary XGBoost and TabPFN In-Context Transformer Rescue Net.
+Backward compatible with original multi-class frontend payload keys.
 """
 
 import shutil
@@ -83,7 +84,8 @@ def analyze(ticker: str = Query(...), period: str = Query("1y"), threshold: floa
 def predict(
     ticker: str = Query(...), 
     period: str = Query("1y"), 
-    horizon: int = Query(5)
+    horizon: int = Query(5),
+    spike_threshold: float = Query(0.05)
 ):
     if not CASCADING_ENGINES_AVAILABLE:
         raise HTTPException(
@@ -183,6 +185,22 @@ def predict(
         else "synthetic data (live fetch was unavailable for this request)"
     )
 
+    # 8. Frontend Interface Compatibility Mapping Layer
+    # We map our precise continuous probabilities back into the keys the frontend is rendering
+    if signal_action == "BUY NOW":
+        f_up = prob_price_up
+        f_down = 1.0 - prob_price_up
+        f_sideways = 0.0
+    elif signal_action == "SHORT / STAY OUT" or signal_action == "STAY OUT":
+        f_up = prob_price_up
+        f_down = 1.0 - prob_price_up
+        f_sideways = 0.0
+    else:
+        # Balanced or consolidation phase representation
+        f_up = prob_price_up * 0.5
+        f_down = (1.0 - prob_price_up) * 0.5
+        f_sideways = 0.5
+
     return {
         "ticker": ticker.upper(),
         "realtime_signal": {
@@ -203,9 +221,11 @@ def predict(
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),
             "close_at_execution": float(latest_row_meta["close"].values[0]),
+            # --- CRITICAL FRONTEND FIX: Restoring legacy keys to satisfy UI reading parameters ---
             "probabilities": {
-                "probability_up": round(prob_price_up, 4),
-                "probability_down": round(1.0 - prob_price_up, 4)
+                "sideways": round(f_sideways, 4),
+                "spike_up": round(f_up, 4),
+                "spike_down": round(f_down, 4)
             }
         },
         "disclaimer": f"This model maps directional volatility probabilities based on {data_note}. Project for educational use."
