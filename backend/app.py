@@ -249,7 +249,7 @@ def predict(
     test_acc = float(accuracy_score(y_test, xgb_gatekeeper.predict(X_test))) if len(y_test) > 0 else 0.0
     baseline_acc = float(y_test.value_counts().max() / len(y_test)) if len(y_test) > 0 else 0.0
 
-    return {
+    payload={
         "ticker": ticker.upper(),
         "realtime_signal": {"action": signal_action, "status": signal_status, "color": signal_color},
         "used_synthetic_data": used_synthetic,
