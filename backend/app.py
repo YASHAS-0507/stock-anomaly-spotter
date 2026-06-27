@@ -32,9 +32,9 @@ from anomaly import detect_anomalies, summarize_anomalies
 from chart_reader import extract_trend_line
 
 # Multi-Stage Decision Intelligence Module Imports
-from backend.regime_detector import detect_market_regime
-from backend.explainability import generate_decision_reason
-from backend.risk_engine import calculate_position_size
+from regime_detector import detect_market_regime
+from explainability import generate_decision_reason
+from risk_engine import calculate_position_size
 
 # Explicit safe ML import checks
 try:
