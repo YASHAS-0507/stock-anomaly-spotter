@@ -1,30 +1,39 @@
+"""
+regime_detector.py
+------------------
+Stage 2 Market Regime Valve. Acts as an operational circuit breaker.
+Intercepts lowercase feature matrices, tracks Bollinger compressions, 
+and enforces systematic data gates prior to downstream classification steps.
+"""
+
 import pandas as pd
 import numpy as np
-from typing import Dict, Union
+from typing import Dict, Union, Any
 
-def detect_market_regime(df: pd.DataFrame) -> Dict[str, Union[str, bool, Dict[str, float]]]:
+def detect_market_regime(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Detects the current market regime based on technical indicators.
     Ensures complete JSON compliance for FastAPI serialization.
 
     Args:
-        df: DataFrame with 'Close' column containing price data
-            (minimum 200 rows for full analysis)
+        df: DataFrame containing lowercase 'close' column data.
+            (minimum 200 rows required for reliable 200-day rolling operations)
 
     Returns:
-        Dict with regime classification and trading permissions
+        Dict with regime classification, trading permissions, and telemetry metrics.
     """
-    # Force structural validation check
-    if df is None or 'Close' not in df.columns or len(df) < 200:
+    # 1. Force structural validation check using pipeline lowercase standards
+    if df is None or 'close' not in df.columns or len(df) < 200:
         return {
             "regime_type": "INSUFFICIENT_DATA",
             "action_permitted": False,
+            "halt_required": True,
             "metrics": {"volatility_zscore": 0.0, "trend_strength": 0.0}
         }
 
-    close = df['Close']
+    close = df['close']
 
-    # 1. Calculate SMAs (Trend Verification)
+    # 2. Calculate SMAs (Trend Verification)
     sma_50 = close.rolling(window=50).mean()
     sma_200 = close.rolling(window=200).mean()
     current_price = float(close.iloc[-1])
@@ -43,7 +52,7 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Union[str, bool, Dict[st
         bull_trend = (current_price > last_sma_50) and (last_sma_50 > last_sma_200)
         bear_trend = (current_price < last_sma_50) and (last_sma_50 < last_sma_200)
 
-    # 2. Volatility Calculation (Drop lookback NaNs to prevent type leaks)
+    # 3. Volatility Calculation (Drop lookback NaNs to prevent type leaks)
     returns = close.pct_change()
     volatility_14d = (returns.rolling(window=14).std() * np.sqrt(252)).dropna()
     
@@ -64,7 +73,7 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Union[str, bool, Dict[st
         vol_zscore = 0.0
         high_volatility = False
 
-    # 3. Bollinger Bandwidth (Squeeze Isolation)
+    # 4. Bollinger Bandwidth (Squeeze Isolation)
     sma_20 = close.rolling(window=20).mean()
     std_20 = close.rolling(window=20).std()
 
@@ -79,7 +88,7 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Union[str, bool, Dict[st
     if pd.notna(bb_bandwidth.iloc[-1]) and pd.notna(bb_bw_ma.iloc[-1]):
         sideways_squeeze = float(bb_bandwidth.iloc[-1]) < float(bb_bw_ma.iloc[-1])
 
-    # 4. Resolve Regime Cascades
+    # 5. Resolve Regime Cascades
     regime_type = "NORMAL"
     action_permitted = True
 
@@ -94,21 +103,26 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Union[str, bool, Dict[st
     elif bear_trend:
         regime_type = "BEAR_TREND"
 
-    # Strict casting to native Python primitives for JSON parsing
+    # Enforce clear mapping for app.py circuit breaker expectations
+    halt_required = not action_permitted
+
+    # Strict casting to native Python primitives for clean JSON parsing
     return {
         "regime_type": str(regime_type),
         "action_permitted": bool(action_permitted),
+        "halt_required": bool(halt_required),
         "metrics": {
             "volatility_zscore": 0.0 if np.isnan(vol_zscore) else round(float(vol_zscore), 4),
             "trend_strength": 0.0 if np.isnan(trend_strength) else round(float(trend_strength), 4)
         }
     }
 
+
 if __name__ == "__main__":
-    # Internal execution test with synthetic market trend data
+    # Internal execution verification using target schema frames
     dates = pd.date_range(start="2023-01-01", periods=300, freq="D")
     prices = np.cumprod(1 + np.random.normal(0.0005, 0.02, 300)) * 100
 
-    df = pd.DataFrame({"Close": prices}, index=dates)
+    df = pd.DataFrame({"close": prices}, index=dates)
     result = detect_market_regime(df)
     print(f"Sanitization Audit Result: {result}")
