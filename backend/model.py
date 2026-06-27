@@ -118,3 +118,50 @@ def predict_latest(model: RandomForestClassifier, feature_df: pd.DataFrame, sele
         "prob_down": round(1 - prob_up, 4),
         "predicted_direction": "up" if prob_up >= 0.5 else "down",
     }
+# =====================================================================
+# PRODUCTION INFERENCE INTEGRATION LAYER
+# =====================================================================
+
+class InferenceEngine:
+    def __init__(self):
+        self.model_version = "v1.0.0-rf"
+        self._trained_model = None
+        self._selected_features = None
+
+    def initialize_production_model(self, feature_df: pd.DataFrame):
+        """
+        Trains the internal model instance on available history so it's
+        warmed up and ready for live endpoint queries.
+        """
+        try:
+            print("[model] Initializing production Random Forest classifier...")
+            result = train_direction_model(feature_df, test_fraction=0.15)
+            self._trained_model = result.model
+            self._selected_features = result.selected_features
+            print(f"[model] Initialization successful. Metrics -> Accuracy: {result.accuracy}, Features: {self._selected_features}")
+        except Exception as e:
+            print(f"[model] Core compilation failed: {str(e)}. Falling back to baseline configuration.")
+            self._trained_model = None
+
+    def predict_anomaly_probability(self, feature_df: pd.DataFrame) -> float:
+        """
+        Exposes a standardized interface for app.py to get win probabilities.
+        """
+        # Fallback if model training failed or dataframe is sparse
+        if self._trained_model is None or feature_df is None or feature_df.empty:
+            return 0.50
+
+        try:
+            # Re-use your existing prediction routine safely
+            prediction_payload = predict_latest(
+                model=self._trained_model, 
+                feature_df=feature_df, 
+                selected_features=self._selected_features
+            )
+            return float(prediction_payload["prob_up"])
+        except Exception as e:
+            print(f"[model] Live inference error: {str(e)}. Defaulting to 0.50 neutral risk bounds.")
+            return 0.50
+
+# Instantiate a persistent singleton instance for Dependency Injection
+intelligence_core = InferenceEngine()

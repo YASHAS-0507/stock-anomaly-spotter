@@ -35,6 +35,7 @@ from chart_reader import extract_trend_line
 from regime_detector import detect_market_regime
 from explainability import generate_decision_reason
 from risk_engine import calculate_position_size
+from model import intelligence_core
 
 # Explicit safe ML import checks
 try:
@@ -46,6 +47,19 @@ except ImportError:
     CASCADING_ENGINES_AVAILABLE = False
 
 app = FastAPI(title="Stock Anomaly Spotter API")
+
+@app.on_event("startup")
+def startup_event():
+    """
+    Warms up the ML engine and verifies data connectivity on server launch.
+    """
+    from data_pipeline import get_price_data
+    # Use a liquid ticker for initialization
+    historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
+    
+    # Run the model initialization/training
+    intelligence_core.initialize_production_model(historical_df)
+    print("[app] ML Intelligence Core warmed up and ready.")
 
 # =====================================================================
 # STAGE 6: STATE MANAGEMENT (IN-MEMORY PORTFOLIO TRACKER)
