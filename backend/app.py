@@ -51,15 +51,22 @@ app = FastAPI(title="Stock Anomaly Spotter API")
 @app.on_event("startup")
 def startup_event():
     """
-    Warms up the ML engine and verifies data connectivity on server launch.
+    Warms up the ML engine by processing the raw data into the 
+    required feature format before training.
     """
     from data_pipeline import get_price_data
-    # Use a liquid ticker for initialization
+    from features import build_feature_table # Ensure this is imported
+    
+    # 1. Get raw data
     historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
     
-    # Run the model initialization/training
-    intelligence_core.initialize_production_model(historical_df)
-    print("[app] ML Intelligence Core warmed up and ready.")
+    # 2. CRITICAL: Process the raw data into the required feature format
+    # This matches the schema the model expects
+    processed_df = build_feature_table(historical_df)
+    
+    # 3. Train using the processed features
+    intelligence_core.initialize_production_model(processed_df)
+    print("[app] ML Intelligence Core warmed up with processed features.")
 
 # =====================================================================
 # STAGE 6: STATE MANAGEMENT (IN-MEMORY PORTFOLIO TRACKER)
