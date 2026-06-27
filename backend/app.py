@@ -13,7 +13,6 @@ import os
 import numpy as np
 import pandas as pd
 import math
-import chitrana
 from typing import Dict, Any, Union, List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
