@@ -47,3 +47,21 @@ Thumbs.db
 .cache/
 dist/
 coverage/
+# Python virtual environments
+venv/
+.venv/
+
+# Secrets
+*.pem
+*.key
+*.crt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS resource forks
+._*
+
+# Temporary files
+*.tmp
+*.bak
