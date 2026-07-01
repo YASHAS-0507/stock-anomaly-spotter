@@ -37,6 +37,12 @@ from explainability import generate_decision_reason
 from risk_engine import calculate_position_size
 from model import intelligence_core
 
+# Market Data Layer (Phase 1)
+from services.market_data import market_data_manager, Interval
+from services.redis_manager import redis_manager
+from services.market_status import market_status_service
+from routers.market import router as market_router
+
 # Explicit safe ML import checks
 try:
     import xgboost as xgb
@@ -109,13 +115,21 @@ def clean_json_data(obj):
 _frontend_url = os.environ.get("FRONTEND_URL")
 _allowed_origins = [_frontend_url] if _frontend_url else ["*"]
 
+# Add localhost for development
+if _frontend_url and "localhost" not in _frontend_url:
+    _allowed_origins.append("http://localhost:3000")
+    _allowed_origins.append("http://127.0.0.1:3000")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://selfless-intuition-production.up.railway.app"], 
-    allow_credentials=True, 
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Market Data router (Phase 1)
+app.include_router(market_router, tags=["market"])
 
 # =====================================================================
 # THE IRONCLAD SAFETY NET: GLOBAL EXCEPTION HANDLERS
@@ -145,7 +159,8 @@ SAFE_FALLBACK_PAYLOAD = {
     "stage_4_explainability": {
         "primary_signal": "HOLD",
         "confidence_rating": "0.0%",
-        "reasoning_chain": ["Fallback protection mapping activated due to systemic interruption."]
+        "reasoning_chain": ["Fallback protection mapping activated due to systemic interruption."],
+        "summary": "HOLD (0.0% confidence). Fallback protection mapping activated due to systemic interruption."
     },
     "stage_5_risk_matrix": {
         "decision": "HOLD",
@@ -157,7 +172,7 @@ SAFE_FALLBACK_PAYLOAD = {
     },
     "stage_6_portfolio_snapshot": {
         "free_cash": 5000.00,
-        "total_portfolio_value": 5000.00,
+        "portfolio_value": 5000.00,
         "active_asset_exposure": []
     },
     "disclaimer": "The pipeline encountered an interruption. Defaulting to safe neutral output to maintain UI stability."
@@ -183,14 +198,14 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # =====================================================================
 def _load_features(ticker: str, period: str, horizon: int = 5):
     df, used_synthetic = get_price_data(ticker, period=period)
-    if len(df) < 60:
+    if len(df) < 45:
         raise ValueError("Not enough data to analyze this ticker/period.")
     
     try:
         feature_df = build_feature_table(df, horizon=horizon)
     except TypeError:
         feature_df = build_feature_table(df)
-         
+    
     return feature_df, used_synthetic, df
 
 # =====================================================================
@@ -272,22 +287,8 @@ def predict(
     if len(feature_df) < 45:
         raise ValueError("Insufficient dataset historical context.")
 
-    # 2. Re-run indicators for validation datasets
-    full_calculated_df = raw_df.copy().sort_values("date").reset_index(drop=True)
-    full_calculated_df = add_returns(full_calculated_df)
-    full_calculated_df = add_moving_averages(full_calculated_df)
-    full_calculated_df = add_returns(full_calculated_df) if "daily_return" not in full_calculated_df.columns else full_calculated_df
-    full_calculated_df = add_rsi(full_calculated_df)
-    full_calculated_df = add_volatility(full_calculated_df)
-    full_calculated_df["daily_return"] = full_calculated_df["daily_return"].fillna(0)
-    full_calculated_df = add_rolling_zscore(full_calculated_df)
-    full_calculated_df = add_volume_features(full_calculated_df)
-    full_calculated_df = add_macd(full_calculated_df)
-    full_calculated_df = add_bollinger_bands(full_calculated_df)
-    full_calculated_df = add_lagged_features(full_calculated_df, columns=["daily_return", "rsi", "return_zscore"], lags=(1, 2, 3))
-
-    # STAGE 2: MARKET REGIME VALVE CHECK
-    regime_snapshot = detect_market_regime(full_calculated_df)
+    # STAGE 2: MARKET REGIME VALVE CHECK (use already-computed feature_df)
+    regime_snapshot = detect_market_regime(feature_df)
 
     feature_features = [
         "return_zscore", "rsi", "macd", "macd_signal", 
@@ -297,14 +298,12 @@ def predict(
     for col in feature_features:
         if col not in feature_df.columns:
             feature_df[col] = 0.0
-        if col not in full_calculated_df.columns:
-            full_calculated_df[col] = 0.0
 
     X = feature_df[feature_features]
     y = feature_df["next_day_up"].astype(int)
 
-    X_latest = full_calculated_df[feature_features].iloc[[-1]]
-    latest_row_meta = full_calculated_df.iloc[[-1]]
+    X_latest = feature_df[feature_features].iloc[[-1]]
+    latest_row_meta = feature_df.iloc[[-1]]
     latest_close = float(latest_row_meta["close"].values[0])
 
     # Intercept Execution early if Market Intelligence Layer permits no active action
@@ -327,8 +326,9 @@ def predict(
             },
             "stage_4_explainability": {
                 "primary_signal": "HOLD",
-                "confidence_rating": "100.0%",
-                "reasoning_chain": [f"System locked execution circuit breaker due to market environment: {regime_snapshot['regime_type']}"]
+                "confidence_rating": "0.0%",  # NO FALSE CONFIDENCE
+                "reasoning_chain": [f"Analysis halted by regime detection: {regime_snapshot['regime_type']}"],
+                "summary": f"Analysis halted: {regime_snapshot['regime_type']}. Model did not execute."
             },
             "stage_5_risk_matrix": {
                 "decision": "HOLD",
@@ -336,20 +336,23 @@ def predict(
                 "stop_loss_limit": None,
                 "take_profit_limit": None,
                 "allocated_risk_cash": 0.0,
-                "risk_mitigation_reason": f"Execution gate disabled inside structural {regime_snapshot['regime_type']} macro footprint."
+                "entry_price": None,
+                "risk_reward_ratio": None,
+                "risk_mitigation_reason": f"Execution blocked by regime: {regime_snapshot['regime_type']}"
             },
             "stage_6_portfolio_snapshot": {
                 "free_cash": round(PORTFOLIO_STATE["available_cash"], 2),
-                "total_portfolio_value": round(PORTFOLIO_STATE["total_equity"], 2),
+                "portfolio_value": round(PORTFOLIO_STATE["total_equity"], 2),
                 "active_asset_exposure": list(PORTFOLIO_STATE["open_trades"].keys())
             },
-            "disclaimer": "This model maps directional volatility probabilities based on live data. Project for educational use."
+            "execution_status": "halted",  # NEW FIELD: halted|completed|failed
+            "halt_reason": regime_snapshot['regime_type'],
+            "disclaimer": "Analysis halted by regime detection. Model did not execute."
         }
         return clean_json_data(payload)
 
     # 3. Split data chronologically
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, shuffle=False)
-
     # 4. Train Model
     xgb_gatekeeper = xgb.XGBClassifier(
         max_depth=3, 
@@ -408,6 +411,9 @@ def predict(
     # STAGE 4: GENERATE EXPLAINABILITY STRINGS
     latest_features_dict = X_latest.to_dict(orient="records")[0]
     explainability_snapshot = generate_decision_reason(probabilities_payload, latest_features_dict)
+    
+    # Add summary field for frontend compatibility
+    explainability_snapshot["summary"] = f"{explainability_snapshot['primary_signal']} ({explainability_snapshot['confidence_rating']} confidence). " + " ".join(explainability_snapshot['reasoning_chain'])
 
     # STAGE 5: COMPUTE POSITION SIZING METRIC
     risk_snapshot = calculate_position_size(
@@ -450,13 +456,16 @@ def predict(
             "stop_loss_limit": risk_snapshot.get("stop_loss", None),
             "take_profit_limit": risk_snapshot.get("take_profit", None),
             "allocated_risk_cash": risk_snapshot.get("actual_risk", 0.0),
+            "entry_price": risk_snapshot.get("entry_price", None),
+            "risk_reward_ratio": risk_snapshot.get("risk_reward_ratio", None),
             "risk_mitigation_reason": risk_snapshot.get("reason", "Passed systemic risk metrics filters")
         },
         "stage_6_portfolio_snapshot": {
             "free_cash": round(PORTFOLIO_STATE["available_cash"], 2),
-            "total_portfolio_value": round(PORTFOLIO_STATE["total_equity"], 2),
+            "portfolio_value": round(PORTFOLIO_STATE["total_equity"], 2),
             "active_asset_exposure": list(PORTFOLIO_STATE["open_trades"].keys())
         },
+        "execution_status": "completed",  # NEW FIELD: completed|halted|failed
         "disclaimer": "This model maps directional volatility probabilities based on live data. Project for educational use."
     }
 
