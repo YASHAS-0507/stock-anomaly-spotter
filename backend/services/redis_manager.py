@@ -1,516 +1,220 @@
 """
 redis_manager.py
 ----------------
-Redis Cache Layer for Market Data.
-
-Features:
-- Historical data cached in memory (with Redis persistence)
-- Latest candles updated incrementally
-- Pub/Sub for live feed distribution
-- TTL-based expiration
-- Connection pooling and retry logic
+Redis Cache Layer — standalone, no imports from other services.
+Provides a simple get/set/delete interface with local in-memory
+fallback when Redis is not available.
 """
 
 import json
 import logging
+import os
 import time
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional
 from threading import Lock
-
-import redis
-import pandas as pd
-
-from services.market_data import Interval, Candle, market_data_manager
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RedisConfig:
-    """Redis connection configuration."""
-    host: str = "localhost"
-    port: int = 6379
-    db: int = 0
-    password: Optional[str] = None
-    max_connections: int = 10
-    socket_timeout: float = 5.0
-    socket_connect_timeout: float = 5.0
-    decode_responses: bool = True
-    
-    @property
-    def url(self) -> str:
-        auth = f":{self.password}@" if self.password else ""
-        return f"redis://{auth}{self.host}:{self.port}/{self.db}"
+class _LocalCache:
+    """Thread-safe in-process dict cache with TTL support."""
+
+    def __init__(self):
+        self._store: Dict[str, Any] = {}
+        self._expiry: Dict[str, float] = {}
+        self._lock = Lock()
+
+    def get(self, key: str) -> Optional[str]:
+        with self._lock:
+            exp = self._expiry.get(key)
+            if exp and time.time() > exp:
+                self._store.pop(key, None)
+                self._expiry.pop(key, None)
+                return None
+            return self._store.get(key)
+
+    def set(self, key: str, value: str, ex: int = 300) -> None:
+        with self._lock:
+            self._store[key] = value
+            self._expiry[key] = time.time() + ex
+
+    def delete(self, key: str) -> None:
+        with self._lock:
+            self._store.pop(key, None)
+            self._expiry.pop(key, None)
+
+    def keys(self, pattern: str = "*") -> List[str]:
+        with self._lock:
+            now = time.time()
+            expired = [k for k, exp in self._expiry.items() if now > exp]
+            for k in expired:
+                self._store.pop(k, None)
+                self._expiry.pop(k, None)
+            if pattern == "*":
+                return list(self._store.keys())
+            prefix = pattern.rstrip("*")
+            return [k for k in self._store if k.startswith(prefix)]
+
+    def flushdb(self) -> None:
+        with self._lock:
+            self._store.clear()
+            self._expiry.clear()
+
+    def dbsize(self) -> int:
+        with self._lock:
+            return len(self._store)
+
+    def info(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "mode": "local_fallback",
+                "keys": len(self._store),
+            }
 
 
 class RedisManager:
     """
-    Redis cache manager for market data.
-    
-    Caches:
-    - Historical DataFrames (key: market:{symbol}:{interval}:history)
-    - Latest candles (key: market:{symbol}:{interval}:latest)
-    - Validation stats (key: market:validation:stats)
-    - Market status (key: market:status)
-    
-    Pub/Sub channels:
-    - market:candles:{interval} - New candle notifications
-    - market:status - Status updates
+    Unified cache interface. Transparently uses Redis when available,
+    otherwise falls back to the in-process _LocalCache.
     """
-    
-    # Key prefixes
-    HISTORY_PREFIX = "market:history"
-    LATEST_PREFIX = "market:latest"
-    STATS_KEY = "market:validation:stats"
-    STATUS_KEY = "market:status"
-    
-    # Default TTLs (seconds)
-    HISTORY_TTL = 3600      # 1 hour for historical data
-    LATEST_TTL = 300        # 5 minutes for latest candle
-    STATUS_TTL = 60         # 1 minute for status
-    
-    def __init__(self, config: Optional[RedisConfig] = None):
-        self.config = config or RedisConfig()
-        self._pool: Optional[redis.ConnectionPool] = None
-        self._client: Optional[redis.Redis] = None
-        self._pubsub: Optional[redis.client.PubSub] = None
-        self._connected = False
-        self._lock = Lock()
-        
-        # Local fallback cache (when Redis unavailable)
-        self._local_cache: Dict[str, Tuple[Any, float]] = {}
-    
-    # ============================================================
-    # CONNECTION MANAGEMENT
-    # ============================================================
-    
-    def connect(self) -> bool:
-        """Establish Redis connection with retry logic."""
-        with self._lock:
-            if self._connected and self._client:
-                try:
-                    self._client.ping()
-                    return True
-                except Exception:
-                    self._connected = False
-            
-            try:
-                self._pool = redis.ConnectionPool.from_url(
-                    self.config.url,
-                    max_connections=self.config.max_connections,
-                    socket_timeout=self.config.socket_timeout,
-                    socket_connect_timeout=self.config.socket_connect_timeout,
-                    decode_responses=self.config.decode_responses
-                )
-                self._client = redis.Redis(connection_pool=self._pool)
-                
-                # Test connection
-                self._client.ping()
-                self._connected = True
-                logger.info("Redis connection established")
-                return True
-                
-            except Exception as e:
-                logger.warning(f"Redis connection failed: {e}. Using local cache fallback.")
-                self._connected = False
-                self._client = None
-                self._pool = None
-                return False
-    
-    def disconnect(self) -> None:
-        """Close Redis connection."""
-        with self._lock:
-            if self._pubsub:
-                self._pubsub.close()
-                self._pubsub = None
-            if self._client:
-                self._client.close()
-                self._client = None
-            if self._pool:
-                self._pool.disconnect()
-                self._pool = None
-            self._connected = False
-            logger.info("Redis connection closed")
-    
-    def is_connected(self) -> bool:
-        """Check if Redis is connected."""
-        if not self._connected or not self._client:
-            return False
+
+    # Key constants
+    STATUS_KEY  = "market:status"
+    STATS_KEY   = "market:validation:stats"
+    STATUS_TTL  = 60
+    HISTORY_TTL = 3600
+    LATEST_TTL  = 300
+
+    def __init__(self):
+        self._client = None
+        self._local = _LocalCache()
+        self._using_redis = False
+        self._connect()
+
+    def _connect(self) -> None:
+        redis_url = os.environ.get("REDIS_URL", "")
+        if not redis_url:
+            logger.info("[redis_manager] REDIS_URL not set — using local in-memory fallback.")
+            return
         try:
+            import redis as redis_lib
+            self._client = redis_lib.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_timeout=2,
+                socket_connect_timeout=2,
+            )
             self._client.ping()
-            return True
+            self._using_redis = True
+            logger.info(f"[redis_manager] Connected to Redis at {redis_url}")
+        except Exception as e:
+            logger.warning(f"[redis_manager] Redis connection failed ({e}) — using local fallback.")
+            self._client = None
+
+    # ------------------------------------------------------------------
+    # Public properties
+    # ------------------------------------------------------------------
+
+    @property
+    def is_connected(self) -> bool:
+        return self._using_redis
+
+    # ------------------------------------------------------------------
+    # Core get / set / delete
+    # ------------------------------------------------------------------
+
+    def get(self, key: str) -> Optional[Any]:
+        try:
+            raw = self._client.get(key) if self._using_redis else self._local.get(key)
+            return json.loads(raw) if raw is not None else None
         except Exception:
-            self._connected = False
-            return False
-    
-    # ============================================================
-    # KEY HELPERS
-    # ============================================================
-    
-    def _history_key(self, symbol: str, interval: Interval) -> str:
-        return f"{self.HISTORY_PREFIX}:{symbol}:{interval.value}"
-    
-    def _latest_key(self, symbol: str, interval: Interval) -> str:
-        return f"{self.LATEST_PREFIX}:{symbol}:{interval.value}"
-    
-    # ============================================================
-    # HISTORICAL DATA CACHING
-    # ============================================================
-    
-    def cache_history(
-        self,
-        symbol: str,
-        interval: Interval,
-        df: pd.DataFrame,
-        ttl: Optional[int] = None
-    ) -> bool:
-        """Cache historical DataFrame."""
-        if df.empty:
-            return False
-        
-        key = self._history_key(symbol, interval)
-        ttl = ttl or self.HISTORY_TTL
-        
-        try:
-            # Convert DataFrame to JSON-serializable format
-            data = df.copy()
-            data["timestamp"] = data["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S%z")
-            payload = {
-                "data": data.to_dict(orient="records"),
-                "cached_at": datetime.now(timezone.utc).isoformat(),
-                "rows": len(df)
-            }
-            
-            if self.is_connected():
-                self._client.setex(key, ttl, json.dumps(payload))
-            else:
-                self._local_cache[key] = (payload, time.time() + ttl)
-            
-            logger.debug(f"Cached {len(df)} rows for {key}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to cache history for {key}: {e}")
-            return False
-    
-    def get_cached_history(
-        self,
-        symbol: str,
-        interval: Interval
-    ) -> Optional[pd.DataFrame]:
-        """Retrieve cached historical DataFrame."""
-        key = self._history_key(symbol, interval)
-        
-        try:
-            if self.is_connected():
-                raw = self._client.get(key)
-            else:
-                cached = self._local_cache.get(key)
-                if cached and cached[1] > time.time():
-                    raw = json.dumps(cached[0])
-                else:
-                    raw = None
-            
-            if not raw:
-                return None
-            
-            payload = json.loads(raw)
-            df = pd.DataFrame(payload["data"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to get cached history for {key}: {e}")
             return None
-    
-    # ============================================================
-    # LATEST CANDLE CACHING (Incremental)
-    # ============================================================
-    
-    def cache_latest_candle(
-        self,
-        symbol: str,
-        interval: Interval,
-        candle: Candle,
-        ttl: Optional[int] = None
-    ) -> bool:
-        """Cache latest candle (overwrites previous)."""
-        key = self._latest_key(symbol, interval)
-        ttl = ttl or self.LATEST_TTL
-        
+
+    def set(self, key: str, value: Any, ttl: int = 300) -> None:
         try:
-            payload = {
-                "candle": candle.to_dict(),
-                "cached_at": datetime.now(timezone.utc).isoformat()
-            }
-            
-            if self.is_connected():
-                self._client.setex(key, ttl, json.dumps(payload))
+            serialized = json.dumps(value, default=str)
+            if self._using_redis:
+                self._client.set(key, serialized, ex=ttl)
             else:
-                self._local_cache[key] = (payload, time.time() + ttl)
-            
-            return True
-            
+                self._local.set(key, serialized, ex=ttl)
         except Exception as e:
-            logger.error(f"Failed to cache latest candle for {key}: {e}")
-            return False
-    
-    def get_latest_candle(
-        self,
-        symbol: str,
-        interval: Interval
-    ) -> Optional[Candle]:
-        """Get latest cached candle."""
-        key = self._latest_key(symbol, interval)
-        
+            logger.debug(f"[redis_manager] set failed for {key}: {e}")
+
+    def delete(self, key: str) -> None:
         try:
-            if self.is_connected():
-                raw = self._client.get(key)
+            if self._using_redis:
+                self._client.delete(key)
             else:
-                cached = self._local_cache.get(key)
-                if cached and cached[1] > time.time():
-                    raw = json.dumps(cached[0])
-                else:
-                    raw = None
-            
-            if not raw:
-                return None
-            
-            payload = json.loads(raw)
-            return Candle.from_dict(payload["candle"])
-            
-        except Exception as e:
-            logger.error(f"Failed to get latest candle for {key}: {e}")
-            return None
-    
-    # ============================================================
-    # VALIDATION STATS
-    # ============================================================
-    
-    def cache_validation_stats(self, stats: Dict[str, int]) -> bool:
-        """Cache validation statistics."""
+                self._local.delete(key)
+        except Exception:
+            pass
+
+    def keys(self, pattern: str = "*") -> List[str]:
         try:
-            payload = {
-                "stats": stats,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-            
-            if self.is_connected():
-                self._client.setex(self.STATS_KEY, self.STATUS_TTL, json.dumps(payload))
+            if self._using_redis:
+                return self._client.keys(pattern)
+            return self._local.keys(pattern)
+        except Exception:
+            return []
+
+    def flush(self) -> None:
+        try:
+            if self._using_redis:
+                self._client.flushdb()
             else:
-                self._local_cache[self.STATS_KEY] = (payload, time.time() + self.STATUS_TTL)
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cache validation stats: {e}")
-            return False
-    
-    def get_validation_stats(self) -> Optional[Dict[str, int]]:
-        """Get cached validation statistics."""
-        try:
-            if self.is_connected():
-                raw = self._client.get(self.STATS_KEY)
-            else:
-                cached = self._local_cache.get(self.STATS_KEY)
-                if cached and cached[1] > time.time():
-                    raw = json.dumps(cached[0])
-                else:
-                    raw = None
-            
-            if not raw:
-                return None
-            
-            payload = json.loads(raw)
-            return payload["stats"]
-        except Exception as e:
-            logger.error(f"Failed to get validation stats: {e}")
-            return None
-    
-    # ============================================================
-    # MARKET STATUS
-    # ============================================================
-    
-    def cache_market_status(self, status: Dict[str, Any]) -> bool:
-        """Cache market status."""
-        try:
-            payload = {
-                "status": status,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }
-            
-            if self.is_connected():
-                self._client.setex(self.STATUS_KEY, self.STATUS_TTL, json.dumps(payload))
-            else:
-                self._local_cache[self.STATUS_KEY] = (payload, time.time() + self.STATUS_TTL)
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cache market status: {e}")
-            return False
-    
-    def get_market_status(self) -> Optional[Dict[str, Any]]:
-        """Get cached market status."""
-        try:
-            if self.is_connected():
-                raw = self._client.get(self.STATUS_KEY)
-            else:
-                cached = self._local_cache.get(self.STATUS_KEY)
-                if cached and cached[1] > time.time():
-                    raw = json.dumps(cached[0])
-                else:
-                    raw = None
-            
-            if not raw:
-                return None
-            
-            payload = json.loads(raw)
-            return payload["status"]
-        except Exception as e:
-            logger.error(f"Failed to get market status: {e}")
-            return None
-    
-    # ============================================================
-    # PUB/SUB FOR LIVE FEEDS
-    # ============================================================
-    
-    def _channel(self, interval: Interval) -> str:
-        return f"market:candles:{interval.value}"
-    
-    def publish_candle(self, interval: Interval, candle: Candle) -> bool:
-        """Publish new candle to subscribers."""
-        if not self.is_connected():
-            return False
-        
-        try:
-            channel = self._channel(interval)
-            payload = json.dumps(candle.to_dict())
-            self._client.publish(channel, payload)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to publish candle: {e}")
-            return False
-    
-    def subscribe_candles(self, interval: Interval, callback: callable) -> bool:
-        """Subscribe to candle updates for an interval."""
-        if not self.is_connected():
-            return False
-        
-        try:
-            self._pubsub = self._client.pubsub()
-            self._pubsub.subscribe(self._channel(interval))
-            
-            # Run listener in background
-            def listener():
-                for message in self._pubsub.listen():
-                    if message["type"] == "message":
-                        try:
-                            candle_data = json.loads(message["data"])
-                            candle = Candle.from_dict(candle_data)
-                            callback(candle)
-                        except Exception as e:
-                            logger.error(f"PubSub callback error: {e}")
-            
-            import threading
-            thread = threading.Thread(target=listener, daemon=True)
-            thread.start()
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to subscribe: {e}")
-            return False
-    
-    # ============================================================
-    # UTILITY
-    # ============================================================
-    
-    def clear_symbol_cache(self, symbol: str) -> int:
-        """Clear all cached data for a symbol."""
-        if not self.is_connected():
-            # Clear local cache
-            keys_to_remove = [k for k in self._local_cache if symbol in k]
-            for k in keys_to_remove:
-                del self._local_cache[k]
-            return len(keys_to_remove)
-        
-        try:
-            pattern = f"market:*:{symbol}:*"
-            keys = self._client.keys(pattern)
-            if keys:
-                return self._client.delete(*keys)
-            return 0
-        except Exception as e:
-            logger.error(f"Failed to clear cache for {symbol}: {e}")
-            return 0
-    
+                self._local.flushdb()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Convenience wrappers used by market_status and router
+    # ------------------------------------------------------------------
+
+    def cache_market_status(self, status: Dict[str, Any]) -> None:
+        self.set(self.STATUS_KEY, status, ttl=self.STATUS_TTL)
+
+    def get_market_status_cached(self) -> Optional[Dict[str, Any]]:
+        return self.get(self.STATUS_KEY)
+
+    def cache_validation_stats(self, stats: Dict[str, Any]) -> None:
+        self.set(self.STATS_KEY, stats, ttl=self.STATUS_TTL)
+
+    def get_validation_stats(self) -> Optional[Dict[str, Any]]:
+        return self.get(self.STATS_KEY)
+
+    # ------------------------------------------------------------------
+    # Cache info (used by /api/market/cache/info endpoint)
+    # ------------------------------------------------------------------
+
     def get_cache_info(self) -> Dict[str, Any]:
-        """Get cache statistics."""
-        info = {
-            "connected": self.is_connected(),
-            "local_cache_entries": len(self._local_cache),
-            "redis_info": {}
+        info: Dict[str, Any] = {
+            "connected": self._using_redis,
+            "local_cache_entries": self._local.dbsize(),
+            "redis_info": {},
         }
-        
-        if self.is_connected():
+        if self._using_redis and self._client:
             try:
-                redis_info = self._client.info("memory")
+                mem = self._client.info("memory")
                 info["redis_info"] = {
-                    "used_memory_human": redis_info.get("used_memory_human"),
-                    "connected_clients": redis_info.get("connected_clients"),
-                    "total_keys": self._client.dbsize()
+                    "used_memory_human": mem.get("used_memory_human", "N/A"),
+                    "connected_clients": self._client.info().get("connected_clients", 0),
+                    "total_keys": self._client.dbsize(),
                 }
             except Exception:
                 pass
-        
         return info
 
+    # ------------------------------------------------------------------
+    # Symbol-level cache clear (used by router)
+    # ------------------------------------------------------------------
 
-# Singleton instance
+    def clear_symbol_cache(self, symbol: str) -> int:
+        pattern = f"market:*:{symbol}:*"
+        keys = self.keys(pattern)
+        for k in keys:
+            self.delete(k)
+        return len(keys)
+
+
+# Singleton
 redis_manager = RedisManager()
-
-
-if __name__ == "__main__":
-    # Test the service
-    logging.basicConfig(level=logging.INFO)
-    
-    manager = RedisManager()
-    
-    if manager.connect():
-        print("Redis connected")
-        
-        # Test caching
-        candle = Candle(
-            timestamp=datetime.now(timezone.utc),
-            open=2500.0,
-            high=2550.0,
-            low=2490.0,
-            close=2530.0,
-            volume=1000000,
-            symbol="RELIANCE.NS",
-            interval=Interval.DAY_1
-        )
-        
-        manager.cache_latest_candle("RELIANCE.NS", Interval.DAY_1, candle)
-        retrieved = manager.get_latest_candle("RELIANCE.NS", Interval.DAY_1)
-        print(f"Retrieved: {retrieved}")
-        
-        print(f"Cache info: {manager.get_cache_info()}")
-    else:
-        print("Redis not available, using local cache")
-        
-        # Test local cache fallback
-        candle = Candle(
-            timestamp=datetime.now(timezone.utc),
-            open=2500.0,
-            high=2550.0,
-            low=2490.0,
-            close=2530.0,
-            volume=1000000,
-            symbol="RELIANCE.NS",
-            interval=Interval.DAY_1
-        )
-        
-        manager.cache_latest_candle("RELIANCE.NS", Interval.DAY_1, candle)
-        retrieved = manager.get_latest_candle("RELIANCE.NS", Interval.DAY_1)
-        print(f"Retrieved from local cache: {retrieved}")

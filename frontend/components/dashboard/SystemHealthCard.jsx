@@ -1,6 +1,31 @@
-import { formatPercent } from "@/utils/formatting";
+import { useEffect, useState } from "react";
+import { API_BASE } from "@/services/api";
 
 export default function SystemHealthCard({ validationStats, cacheInfo }) {
+  const [telemetry, setTelemetry] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchTelemetry = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/system/telemetry`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setTelemetry(data);
+      } catch {
+        // silently fail — Unavailable shown in UI
+      }
+    };
+
+    fetchTelemetry();
+    const timer = setInterval(fetchTelemetry, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   const stats = validationStats || {
     total_candles: 0,
     valid_candles: 0,
@@ -9,210 +34,167 @@ export default function SystemHealthCard({ validationStats, cacheInfo }) {
     duplicate_candles_detected: 0,
   };
 
+  // cacheInfo comes from /api/market/cache/info
+  // fields: connected, local_cache_entries, redis_info.used_memory_human,
+  //         redis_info.total_keys, redis_info.connected_clients
   const redisInfo = cacheInfo || {};
+  const isRedisConnected = redisInfo.connected ?? false;
+
+  const cpu    = telemetry?.cpu_usage_percent    ?? "Unavailable";
+  const memory = telemetry?.memory_usage_mb      ?? "Unavailable";
+  const disk   = telemetry?.disk_usage_gb        ?? "Unavailable";
+
+  const cpuNum    = typeof cpu    === "number" ? cpu    : null;
+  const memNum    = typeof memory === "number" ? memory : null;
+  const diskNum   = typeof disk   === "number" ? disk   : null;
 
   return (
     <div className="panel">
-      <div className="panel-header">
+      <div className="panel-head">
         <span className="panel-title">System Health</span>
         <span className="panel-badge">INFRASTRUCTURE</span>
       </div>
 
-      <div className="panel-content space-lg">
-        {/* Redis Status */}
-        <div className="card p-lg">
-          <div className="flex items-center justify-between mb-lg">
-            <div className="card-title">Redis Cache</div>
-            <div className="flex items-center gap-sm">
-              <span className={`badge-dot ${redisInfo.connected ? "status-connected" : "status-disconnected"}`} />
-              <span className="text-caption">{redisInfo.connected ? "CONNECTED" : "LOCAL FALLBACK"}</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-md)" }}>
+
+        {/* Redis / Cache Status */}
+        <div style={{ background: "var(--elevated)", borderRadius: 10, padding: "16px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <span className="panel-title" style={{ fontSize: 11 }}>Cache Status</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span className={`badge-dot ${isRedisConnected ? "status-open" : "status-closed"}`} />
+              <span className="text-body" style={{ fontSize: 11 }}>
+                {isRedisConnected ? "REDIS CONNECTED" : "LOCAL FALLBACK"}
+              </span>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-md">
-            <HealthMetric
-              label="Cache Size"
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+            <MetricTile
+              label="Local Entries"
               value={redisInfo.local_cache_entries ?? "N/A"}
-              icon="🎯"
-              status="neutral"
             />
-            <HealthMetric
-              label="Historical Cache"
+            <MetricTile
+              label="Redis Keys"
               value={redisInfo.redis_info?.total_keys ?? "N/A"}
-              icon="💾"
-              status="neutral"
             />
-            <HealthMetric
-              label="Memory Usage"
+            <MetricTile
+              label="Memory"
               value={redisInfo.redis_info?.used_memory_human ?? "N/A"}
-              icon="🧠"
-              status="neutral"
             />
           </div>
+        </div>
 
-          <div className="grid grid-cols-3 gap-md mt-md">
-            <HealthMetric
-              label="Total Keys"
-              value={redisInfo.redis_info?.total_keys != null ? redisInfo.redis_info.total_keys.toLocaleString() : "N/A"}
-              icon="🔑"
-              status="neutral"
+        {/* System Resources — real telemetry from /api/system/telemetry */}
+        <div style={{ background: "var(--elevated)", borderRadius: 10, padding: "16px" }}>
+          <span className="panel-title" style={{ fontSize: 11, display: "block", marginBottom: 12 }}>
+            System Resources
+          </span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <ResourceRow
+              label="CPU"
+              value={cpu}
+              numValue={cpuNum}
+              max={100}
+              unit="%"
+              color="var(--cyan)"
             />
-            <HealthMetric
-              label="API Latency"
-              value={redisInfo.apiLatency ?? "N/A"}
-              icon="⚡"
-              status="neutral"
+            <ResourceRow
+              label="Memory"
+              value={memory}
+              numValue={memNum}
+              max={16384}
+              unit=" MB"
+              color="var(--yellow)"
             />
-            <HealthMetric
-              label="Status"
-              value={redisInfo.connected ? "HEALTHY" : "DEGRADED"}
-              icon={redisInfo.connected ? "✅" : "⚠️"}
-              status={redisInfo.connected ? "good" : "warning"}
+            <ResourceRow
+              label="Disk"
+              value={disk}
+              numValue={diskNum}
+              max={500}
+              unit=" GB"
+              color="var(--green)"
             />
           </div>
         </div>
 
         {/* Data Validation */}
-        <div className="card p-lg">
-          <div className="card-title">Data Validation</div>
-          <div className="mt-md grid grid-cols-2 md:grid-cols-4 gap-md">
-            <ValidationMetric
-              label="Total Candles"
-              value={stats.total_candles.toLocaleString()}
-              icon="📊"
-            />
-            <ValidationMetric
-              label="Valid"
-              value={stats.valid_candles.toLocaleString()}
-              icon="✅"
-              color="var(--green)"
-            />
-            <ValidationMetric
-              label="Invalid"
-              value={stats.invalid_candles.toLocaleString()}
-              icon="❌"
-              color="var(--red)"
-            />
-            <ValidationMetric
+        <div style={{ background: "var(--elevated)", borderRadius: 10, padding: "16px" }}>
+          <span className="panel-title" style={{ fontSize: 11, display: "block", marginBottom: 12 }}>
+            Data Validation
+          </span>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+            <MetricTile label="Total Candles"  value={stats.total_candles} />
+            <MetricTile label="Valid"          value={stats.valid_candles}   color="var(--green)" />
+            <MetricTile label="Invalid"        value={stats.invalid_candles} color={stats.invalid_candles > 0 ? "var(--red)" : "var(--green)"} />
+            <MetricTile
               label="Validity Rate"
-              value={stats.total_candles > 0 
-                ? formatPercent(stats.valid_candles / stats.total_candles) 
-                : "N/A"}
-              icon="📈"
-              color={stats.total_candles > 0 && stats.valid_candles / stats.total_candles > 0.95 ? "var(--green)" : "var(--yellow)"}
+              value={
+                stats.total_candles > 0
+                  ? `${((stats.valid_candles / stats.total_candles) * 100).toFixed(1)}%`
+                  : "N/A"
+              }
+              color={
+                stats.total_candles > 0 && stats.valid_candles / stats.total_candles > 0.95
+                  ? "var(--green)"
+                  : "var(--yellow)"
+              }
             />
-          </div>
-
-          <div className="grid grid-cols-2 gap-md mt-md">
-            <ValidationMetric
-              label="Missing Candles"
-              value={stats.missing_candles_detected.toLocaleString()}
-              icon="🔍"
+            <MetricTile
+              label="Missing"
+              value={stats.missing_candles_detected}
               color={stats.missing_candles_detected > 0 ? "var(--yellow)" : "var(--green)"}
             />
-            <ValidationMetric
+            <MetricTile
               label="Duplicates"
-              value={stats.duplicate_candles_detected.toLocaleString()}
-              icon="📋"
+              value={stats.duplicate_candles_detected}
               color={stats.duplicate_candles_detected > 0 ? "var(--yellow)" : "var(--green)"}
             />
           </div>
         </div>
 
-        {/* Data Freshness */}
-        <div className="card p-lg">
-          <div className="card-title">Data Freshness</div>
-          <div className="mt-md grid grid-cols-3 gap-md">
-            <HealthMetric
-              label="Last Update"
-              value="< 1s ago"
-              icon="🕐"
-              status="good"
-            />
-            <HealthMetric
-              label="Feed Status"
-              value="CONNECTED"
-              icon="📡"
-              status="good"
-            />
-            <HealthMetric
-              label="Pipeline"
-              value="HEALTHY"
-              icon="🔄"
-              status="good"
-            />
-          </div>
-        </div>
-
-        {/* System Resources */}
-        <div className="card p-lg">
-          <div className="card-title">System Resources</div>
-          <div className="mt-md grid grid-cols-3 gap-md">
-            <ResourceBar label="CPU" value={23} max={100} unit="%" color="var(--cyan)" />
-            <ResourceBar label="Memory" value={412} max={2048} unit="MB" color="var(--yellow)" />
-            <ResourceBar label="Disk" value={2.1} max={50} unit="GB" color="var(--green)" />
-          </div>
-        </div>
       </div>
     </div>
   );
 }
 
-function HealthMetric({ label, value, icon, status = "neutral", color }) {
-  const statusColors = {
-    good: "var(--green)",
-    warning: "var(--yellow)",
-    critical: "var(--red)",
-    neutral: "var(--text-2)",
-  };
+function MetricTile({ label, value, color = "var(--text)" }) {
+  return (
+    <div style={{
+      background: "var(--surface)",
+      borderRadius: 8,
+      padding: "10px 12px",
+      textAlign: "center",
+    }}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={{ fontSize: 16, color }}>
+        {value ?? "N/A"}
+      </div>
+    </div>
+  );
+}
+
+function ResourceRow({ label, value, numValue, max, unit, color }) {
+  const pct = numValue !== null ? Math.min((numValue / max) * 100, 100) : 0;
+  const displayValue = numValue !== null ? `${value}${unit}` : "Unavailable";
 
   return (
-    <div className="card p-md text-center">
-      <div className="text-2xl mb-sm">{icon}</div>
-      <div className="text-label">{label}</div>
-      <div className="mt-sm flex items-center justify-center gap-xs">
-        <span className="text-metric-sm font-mono" style={{ color: color || statusColors[status] }}>
-          {value}
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <span className="stat-label">{label}</span>
+        <span className="stat-sub" style={{ fontFamily: "var(--mono)", color: numValue !== null ? color : "var(--text-3)" }}>
+          {displayValue}
         </span>
       </div>
-    </div>
-  );
-}
-
-function ValidationMetric({ label, value, icon, color = "var(--text)" }) {
-  return (
-    <div className="card p-md text-center">
-      <div className="text-2xl mb-sm">{icon}</div>
-      <div className="text-label">{label}</div>
-      <div className="mt-sm text-metric-sm font-mono" style={{ color }}>
-        {value}
+      <div style={{ height: 6, background: "var(--border)", borderRadius: 999, overflow: "hidden" }}>
+        <div style={{
+          height: "100%",
+          width: numValue !== null ? `${pct}%` : "0%",
+          background: color,
+          borderRadius: 999,
+          transition: "width 0.6s ease",
+        }} />
       </div>
     </div>
   );
 }
-
-function ResourceBar({ label, value, max, unit, color }) {
-  const pct = (value / max) * 100;
-  return (
-    <div className="card p-md">
-      <div className="flex items-center justify-between mb-sm">
-        <span className="text-label">{label}</span>
-        <span className="text-caption font-mono">{value}{unit} / {max}{unit}</span>
-      </div>
-      <div className="progress-bar" style={{ height: "8px" }}>
-        <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%`, background: color }} />
-      </div>
-      <div className="flex justify-between mt-xs text-caption text-3">
-        <span>0{unit}</span>
-        <span>{max}{unit}</span>
-      </div>
-    </div>
-  );
-}
-
-const statusColors = {
-  good: "var(--green)",
-  warning: "var(--yellow)",
-  critical: "var(--red)",
-  neutral: "var(--text-2)",
-};

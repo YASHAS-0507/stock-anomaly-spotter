@@ -1,55 +1,114 @@
-export default function TopBar({ onLogout }) {
+import { useEffect, useState } from "react";
+
+export default function TopBar({ marketStatus, onLogout }) {
+  const [currentTime, setCurrentTime] = useState("--:--:--");
+
+  useEffect(() => {
+    const tick = () => {
+      // Use backend IST time if available, else compute locally
+      if (marketStatus?.current_time_ist) {
+        setCurrentTime(marketStatus.current_time_ist);
+      } else {
+        const now = new Date();
+        const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+        const h = String(ist.getUTCHours()).padStart(2, "0");
+        const m = String(ist.getUTCMinutes()).padStart(2, "0");
+        const s = String(ist.getUTCSeconds()).padStart(2, "0");
+        setCurrentTime(`${h}:${m}:${s} IST`);
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [marketStatus?.current_time_ist]);
+
+  const marketPhase  = marketStatus?.market_status ?? "N/A";
+  const feedStatus   = marketStatus?.feed_status   ?? "N/A";
+  const latency      = marketStatus?.latency_ms    ?? "N/A";
+
+  const phaseColor = {
+    OPEN:     "var(--green)",
+    PRE_OPEN: "var(--yellow)",
+    CLOSED:   "var(--text-3)",
+    WEEKEND:  "var(--text-3)",
+  }[marketPhase] ?? "var(--text-3)";
+
+  const feedColor = {
+    LIVE:        "var(--green)",
+    CONNECTED:   "var(--green)",
+    DELAYED:     "var(--yellow)",
+    RECONNECTING:"var(--yellow)",
+    DISCONNECTED:"var(--red)",
+    UNAVAILABLE: "var(--red)",
+  }[feedStatus] ?? "var(--text-3)";
+
   return (
-    <header className="terminal-header panel">
-      <div className="header-left flex items-center gap-lg">
-        <div className="brand flex items-center gap-sm">
-          <div className="w-3 h-3 rounded-full bg-cyan" style={{ boxShadow: "0 0 12px var(--cyan)" }} />
-          <div>
-            <div className="brand-name text-title font-mono">STOCK ANOMALY SPOTTER</div>
-            <div className="brand-tag text-caption">Institutional Trading Terminal</div>
+    <header className="topbar">
+      {/* Brand */}
+      <div className="topbar-brand">
+        <div className="brand-dot" />
+        <div>
+          <div className="brand-name">STOCK ANOMALY SPOTTER</div>
+          <div className="brand-tag">Institutional Trading Terminal</div>
+        </div>
+      </div>
+
+      {/* Center — market info */}
+      <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
+        <div style={{ textAlign: "center" }}>
+          <div className="stat-label">EXCHANGE</div>
+          <div className="stat-sub" style={{ fontFamily: "var(--mono)", color: "var(--text)" }}>
+            {marketStatus?.exchange ?? "NSE"}
+          </div>
+        </div>
+
+        <div style={{ textAlign: "center" }}>
+          <div className="stat-label">MARKET</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: phaseColor,
+              boxShadow: `0 0 6px ${phaseColor}`,
+              display: "inline-block",
+            }} />
+            <span className="stat-sub" style={{ fontFamily: "var(--mono)", color: phaseColor }}>
+              {marketPhase}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ textAlign: "center" }}>
+          <div className="stat-label">FEED</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: feedColor,
+              boxShadow: `0 0 6px ${feedColor}`,
+              display: "inline-block",
+            }} />
+            <span className="stat-sub" style={{ fontFamily: "var(--mono)", color: feedColor }}>
+              {feedStatus}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ textAlign: "center" }}>
+          <div className="stat-label">LATENCY</div>
+          <div className="stat-sub" style={{ fontFamily: "var(--mono)", color: "var(--cyan)" }}>
+            {latency === "Unavailable" ? "N/A" : `${latency}ms`}
           </div>
         </div>
       </div>
 
-      <div className="header-center hidden md:block">
-        <div className="flex items-center gap-lg">
-          <div className="text-center">
-            <div className="text-label">EXCHANGE</div>
-            <div className="text-value font-mono">NSE</div>
-          </div>
-          <div className="w-px h-8 bg-panel-border mx-md" />
-          <div className="text-center">
-            <div className="text-label">TIMEZONE</div>
-            <div className="text-value font-mono">IST (UTC+5:30)</div>
+      {/* Right — time + logout */}
+      <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+        <div style={{ textAlign: "right" }}>
+          <div className="stat-label">IST TIME</div>
+          <div className="stat-sub" style={{ fontFamily: "var(--mono)", color: "var(--text)" }}>
+            {currentTime}
           </div>
         </div>
-      </div>
-
-      <div className="header-right flex items-center gap-md">
-        <div className="hidden lg:block text-right">
-          <div className="text-label">SESSION</div>
-          <div className="flex items-center justify-end gap-sm">
-            <span className="badge-dot status-warning" />
-            <span className="text-value font-mono signal-hold">PRE-MARKET</span>
-          </div>
-        </div>
-
-        <div className="hidden lg:block text-right">
-          <div className="text-label">FEED</div>
-          <div className="flex items-center justify-end gap-sm">
-            <span className="badge-dot status-disconnected" />
-            <span className="text-value font-mono signal-sell">DISCONNECTED</span>
-          </div>
-        </div>
-
-        <div className="text-right">
-          <div className="text-label">TIME</div>
-          <div className="flex items-center justify-end gap-sm">
-            <span className="text-metric-sm font-mono" id="header-time">--:--:--</span>
-          </div>
-        </div>
-
-        <button className="btn btn-ghost btn-sm ml-sm" onClick={onLogout}>
+        <button className="btn-logout" onClick={onLogout}>
           LOGOUT
         </button>
       </div>
