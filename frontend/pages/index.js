@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { usePrediction } from "@/hooks/usePrediction";
 import { formatPrice, formatPercent, formatTimestamp } from "@/utils/formatting";
 import { getDominantClass, getAccuracyStatus, extractRiskPortfolio } from "@/utils/prediction";
+import { getMarketStatus, getValidationStats, getCacheInfo } from "@/services/market";
 
 // Components - Layout
 import TopBar from "@/components/TopBar";
@@ -24,6 +25,9 @@ export default function Home() {
   const [horizon, setHorizon] = useState("5");
   const [currentInterval, setCurrentInterval] = useState("1d");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [marketStatus, setMarketStatus] = useState(null);
+  const [validationStats, setValidationStats] = useState(null);
+  const [cacheInfo, setCacheInfo] = useState(null);
 
   const {
     analysis,
@@ -55,15 +59,44 @@ export default function Home() {
     [prediction]
   );
 
-  // Market status
-  const marketStatus = useMemo(() => ({
-    exchange: "NSE",
-    market_status: "WEEKEND",
-    feed_status: "DISCONNECTED",
-    latency_ms: 0,
+  const marketStatusSafe = marketStatus ?? {
+    exchange: "N/A",
+    market_status: "N/A",
+    feed_status: "N/A",
+    latency_ms: "N/A",
     latest_candle: "N/A",
     data_quality: "N/A",
-  }), []);
+    current_time_ist: "N/A",
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMarketData = async () => {
+      try {
+        const [status, validation, cache] = await Promise.all([
+          getMarketStatus(),
+          getValidationStats(),
+          getCacheInfo()
+        ]);
+        if (cancelled) return;
+        setMarketStatus(status);
+        setValidationStats(validation);
+        setCacheInfo(cache);
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("[index] market data refresh failed", err);
+        }
+      }
+    };
+
+    loadMarketData();
+    const timer = setInterval(loadMarketData, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   // Handle analysis run
   const handleRun = () => {
@@ -101,8 +134,8 @@ export default function Home() {
           <div className="market-status-indicator">
             <span className="text-label">Market Status</span>
             <div className="flex items-center gap-sm">
-              <span className={`badge-dot status-${marketStatus.market_status.toLowerCase()}`} />
-              <span className="text-title signal-hold">{marketStatus.market_status}</span>
+              <span className={`badge-dot status-${String(marketStatusSafe.market_status).toLowerCase()}`} />
+              <span className="text-title signal-hold">{marketStatusSafe.market_status}</span>
             </div>
           </div>
         </div>
@@ -112,14 +145,14 @@ export default function Home() {
             <div>
               <span className="text-label">Feed Status</span>
               <div className="flex items-center gap-sm justify-end">
-                <span className={`badge-dot status-${marketStatus.feed_status.toLowerCase()}`} />
-                <span className="text-body signal-neutral">{marketStatus.feed_status}</span>
+                <span className={`badge-dot status-${String(marketStatusSafe.feed_status).toLowerCase()}`} />
+                <span className="text-body signal-neutral">{marketStatusSafe.feed_status}</span>
               </div>
             </div>
             <div className="hidden md:block">
               <span className="text-label">Latency</span>
               <div className="flex items-center justify-end gap-sm">
-                <span className="text-metric-sm font-mono">{marketStatus.latency_ms}ms</span>
+                <span className="text-metric-sm font-mono">{marketStatusSafe.latency_ms}ms</span>
               </div>
             </div>
             <div>
@@ -224,7 +257,15 @@ export default function Home() {
                   />
 
                   {/* MARKET DATA DASHBOARD */}
-                  <MarketDataDashboard key="market-data-dashboard" />
+                  <MarketDataDashboard
+                    key="market-data-dashboard"
+                    status={marketStatus}
+                    validationStats={validationStats}
+                    cacheInfo={cacheInfo}
+                    loading={!marketStatus && !validationStats && !cacheInfo}
+                    currentInterval={currentInterval}
+                    onIntervalChange={setCurrentInterval}
+                  />
                 </aside>
               </div>
 
@@ -232,13 +273,8 @@ export default function Home() {
               <div style={{ maxWidth: "1920px", margin: "0 auto", width: "100%" }}>
                 <div className="terminal-bottom">
                   <SystemHealthCard
-                    validationStats={prediction ? {
-                      total_candles: 0,
-                      valid_candles: 0,
-                      invalid_candles: 0,
-                      missing_candles_detected: 0,
-                      duplicate_candles_detected: 0,
-                    } : null}
+                    validationStats={validationStats}
+                    cacheInfo={cacheInfo}
                     key="system-health-card"
                   />
                 </div>

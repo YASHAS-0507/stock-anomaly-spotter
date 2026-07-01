@@ -10,6 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 import os
+import time
 import numpy as np
 import pandas as pd
 import math
@@ -20,6 +21,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # Core Research Pipeline Imports
 from data_pipeline import get_price_data
@@ -53,6 +59,14 @@ except ImportError:
     CASCADING_ENGINES_AVAILABLE = False
 
 app = FastAPI(title="Stock Anomaly Spotter API")
+
+
+@app.middleware("http")
+async def add_process_time_header(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    response.headers["X-Process-Time-Ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
+    return response
 
 @app.on_event("startup")
 def startup_event():
@@ -110,6 +124,41 @@ def clean_json_data(obj):
     if isinstance(obj, list):
         return [clean_json_data(v) for v in obj]
     return obj
+
+
+def _telemetry_unavailable() -> Dict[str, Any]:
+    return {
+        "cpu_usage_percent": "Unavailable",
+        "memory_usage_mb": "Unavailable",
+        "disk_usage_gb": "Unavailable",
+    }
+
+
+@app.get("/api/system/telemetry")
+def system_telemetry():
+    telemetry: Dict[str, Any] = {}
+
+    if psutil is None:
+        telemetry.update(_telemetry_unavailable())
+    else:
+        try:
+            telemetry["cpu_usage_percent"] = round(psutil.cpu_percent(interval=None), 1)
+        except Exception:
+            telemetry["cpu_usage_percent"] = "Unavailable"
+
+        try:
+            mem = psutil.virtual_memory()
+            telemetry["memory_usage_mb"] = round((mem.total - mem.available) / (1024 * 1024), 1)
+        except Exception:
+            telemetry["memory_usage_mb"] = "Unavailable"
+
+        try:
+            disk = psutil.disk_usage(str(Path.cwd()))
+            telemetry["disk_usage_gb"] = round(disk.used / (1024 * 1024 * 1024), 1)
+        except Exception:
+            telemetry["disk_usage_gb"] = "Unavailable"
+
+    return clean_json_data(telemetry)
 
 # CORS Configuration Matching Production
 _frontend_url = os.environ.get("FRONTEND_URL")
@@ -280,6 +329,8 @@ def predict(
     if not CASCADING_ENGINES_AVAILABLE:
         raise ValueError("XGBoost or dependencies missing on server environment.")
 
+    prediction_start = time.perf_counter()
+
     # 1. Ingest Data Pipelines
     feature_df, used_synthetic, raw_df = _load_features(ticker, period, horizon=horizon)
     feature_df = feature_df.sort_values("date").reset_index(drop=True)
@@ -318,6 +369,9 @@ def predict(
             "pipeline_routing_execution": f"Regime Shield Block [{regime_snapshot['regime_type']}]",
             "configuration": {"horizon_days": horizon, "spike_percentage_threshold": f"{round(spike_threshold * 100, 1)}%"},
             "metrics": {"test_set_accuracy": 0.0, "baseline_majority_accuracy": 0.0},
+            "regime_snapshot": regime_snapshot,
+            "feature_count": len(feature_features),
+            "inference_time_ms": round((time.perf_counter() - prediction_start) * 1000, 1),
             "probabilities": probabilities_payload,
             "latest_day_forecast": {
                 "date": str(latest_row_meta["date"].values[0]),
@@ -443,6 +497,9 @@ def predict(
             "test_set_accuracy": round(test_acc, 4),
             "baseline_majority_accuracy": round(baseline_acc, 4)
         },
+        "regime_snapshot": regime_snapshot,
+        "feature_count": len(feature_features),
+        "inference_time_ms": round((time.perf_counter() - prediction_start) * 1000, 1),
         "probabilities": probabilities_payload,
         "latest_day_forecast": {
             "date": str(latest_row_meta["date"].values[0]),

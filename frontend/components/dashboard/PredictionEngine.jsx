@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { formatPercent, formatPrice } from "@/utils/formatting";
 import { getDominantClass, getAccuracyStatus } from "@/utils/prediction";
 
-function SignalCard({ signal, dominant, className = "", accBeat, accTie, accDiff }) {
+function SignalCard({ signal, dominant, probabilities, className = "", accBeat, accTie, accDiff }) {
   if (!signal) return null;
 
   const isBuy = signal.action === "BUY NOW" || signal.action.includes("BUY");
@@ -50,9 +50,9 @@ function SignalCard({ signal, dominant, className = "", accBeat, accTie, accDiff
           {/* Probability Bars - Only show for completed predictions */}
           {!isHalted && (
             <div className="space-md">
-              <ProbabilityBar label="Spike Up" value={0.72} color="var(--green)" highlight={dominant === "spike_up"} />
-              <ProbabilityBar label="Sideways" value={0.18} color="var(--yellow)" highlight={dominant === "sideways"} />
-              <ProbabilityBar label="Spike Down" value={0.10} color="var(--red)" highlight={dominant === "spike_down"} />
+              <ProbabilityBar label="Spike Up" value={probabilities.spike_up ?? 0} color="var(--green)" highlight={dominant === "spike_up"} />
+              <ProbabilityBar label="Sideways" value={probabilities.sideways ?? 0} color="var(--yellow)" highlight={dominant === "sideways"} />
+              <ProbabilityBar label="Spike Down" value={probabilities.spike_down ?? 0} color="var(--red)" highlight={dominant === "spike_down"} />
             </div>
           )}
 
@@ -141,6 +141,7 @@ export default function PredictionEngine({ prediction, dominant, probSideways, p
                 routing: prediction.pipeline_routing_execution || "Cascading",
               }}
               dominant={dom}
+              probabilities={probs}
               accBeat={accBeat}
               accTie={accTie}
               accDiff={accDiff}

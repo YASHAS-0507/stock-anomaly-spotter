@@ -1,13 +1,7 @@
 import { useState, useEffect } from "react";
-import { getMarketStatus, getValidationStats, getCacheInfo } from "@/services/market";
 
-export default function MarketDataDashboard() {
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [interval, setInterval] = useState("1d");
-  const [validationStats, setValidationStats] = useState(null);
-  const [cacheInfo, setCacheInfo] = useState(null);
+export default function MarketDataDashboard({ status, validationStats, cacheInfo, loading = false, error = null, currentInterval = "1d", onIntervalChange }) {
+  const [localInterval, setLocalInterval] = useState(currentInterval);
 
   const intervals = [
     { value: "1m", label: "1 Minute" },
@@ -18,45 +12,9 @@ export default function MarketDataDashboard() {
     { value: "1d", label: "1 Day" },
   ];
 
-  const fetchStatus = async () => {
-    try {
-      const data = await getMarketStatus();
-      setStatus(data);
-    } catch (e) {
-      setError(e.message);
-    }
-  };
-
-  const fetchValidationStats = async () => {
-    try {
-      const data = await getValidationStats();
-      setValidationStats(data);
-    } catch (e) {
-      console.warn("Validation stats fetch failed:", e);
-    }
-  };
-
-  const fetchCacheInfo = async () => {
-    try {
-      const data = await getCacheInfo();
-      setCacheInfo(data);
-    } catch (e) {
-      console.warn("Cache info fetch failed:", e);
-    }
-  };
-
-  const fetchAll = async () => {
-    setLoading(true);
-    setError(null);
-    await Promise.all([fetchStatus(), fetchValidationStats(), fetchCacheInfo()]);
-    setLoading(false);
-  };
-
   useEffect(() => {
-    fetchAll();
-    const timer = setInterval(fetchAll, 10000);
-    return () => clearInterval(timer);
-  }, []);
+    setLocalInterval(currentInterval);
+  }, [currentInterval]);
 
   const getStatusColor = (marketStatus) => {
     switch (marketStatus) {
@@ -106,8 +64,8 @@ export default function MarketDataDashboard() {
     );
   }
 
-  const marketStatus = status?.market_status || "UNKNOWN";
-  const feedStatus = status?.feed_status || "DISCONNECTED";
+  const marketStatus = status?.market_status || "N/A";
+  const feedStatus = status?.feed_status || "N/A";
 
   return (
     <div className="panel">
@@ -155,8 +113,11 @@ export default function MarketDataDashboard() {
           <div className="status-label">Current Interval</div>
           <div className="status-value">
             <select
-              value={interval}
-              onChange={(e) => setInterval(e.target.value)}
+              value={localInterval}
+              onChange={(e) => {
+                setLocalInterval(e.target.value);
+                onIntervalChange?.(e.target.value);
+              }}
               className="interval-select"
             >
               {intervals.map((i) => (
@@ -188,31 +149,31 @@ export default function MarketDataDashboard() {
           <div className="validation-grid">
             <div className="validation-item">
               <span className="validation-label">Total Candles</span>
-              <span className="validation-value">{validationStats?.total_candles || status?.validation_stats?.total_candles || 0}</span>
+              <span className="validation-value">{validationStats?.total_candles ?? status?.validation_stats?.total_candles ?? "N/A"}</span>
             </div>
             <div className="validation-item success">
               <span className="validation-label">Valid</span>
-              <span className="validation-value">{validationStats?.valid_candles || status?.validation_stats?.valid_candles || 0}</span>
+              <span className="validation-value">{validationStats?.valid_candles ?? status?.validation_stats?.valid_candles ?? "N/A"}</span>
             </div>
             <div className="validation-item danger">
               <span className="validation-label">Invalid</span>
-              <span className="validation-value">{validationStats?.invalid_candles || status?.validation_stats?.invalid_candles || 0}</span>
+              <span className="validation-value">{validationStats?.invalid_candles ?? status?.validation_stats?.invalid_candles ?? "N/A"}</span>
             </div>
             <div className="validation-item warning">
               <span className="validation-label">Missing Detected</span>
-              <span className="validation-value">{validationStats?.missing_candles_detected || status?.validation_stats?.missing_candles_detected || 0}</span>
+              <span className="validation-value">{validationStats?.missing_candles_detected ?? status?.validation_stats?.missing_candles_detected ?? "N/A"}</span>
             </div>
             <div className="validation-item warning">
               <span className="validation-label">Duplicates Detected</span>
-              <span className="validation-value">{validationStats?.duplicate_candles_detected || status?.validation_stats?.duplicate_candles_detected || 0}</span>
+              <span className="validation-value">{validationStats?.duplicate_candles_detected ?? status?.validation_stats?.duplicate_candles_detected ?? "N/A"}</span>
             </div>
             <div className="validation-item">
               <span className="validation-label">Validity Rate</span>
               <span className="validation-value">
                 {(() => {
-                  const total = validationStats?.total_candles || status?.validation_stats?.total_candles || 0;
-                  const valid = validationStats?.valid_candles || status?.validation_stats?.valid_candles || 0;
-                  return total > 0 ? ((valid / total) * 100).toFixed(1) + "%" : "N/A";
+                  const total = validationStats?.total_candles ?? status?.validation_stats?.total_candles;
+                  const valid = validationStats?.valid_candles ?? status?.validation_stats?.valid_candles;
+                  return total != null && total > 0 ? ((valid / total) * 100).toFixed(1) + "%" : "N/A";
                 })()}
               </span>
             </div>
@@ -232,42 +193,30 @@ export default function MarketDataDashboard() {
               </span>
             </div>
             <div className="cache-item">
-              <span className="cache-label">Cache Hit Rate</span>
-              <span className="cache-value">{cacheInfo.cacheHitRate || "N/A"}</span>
+              <span className="cache-label">Cache Size</span>
+              <span className="cache-value">{cacheInfo.local_cache_entries ?? "N/A"}</span>
             </div>
             <div className="cache-item">
               <span className="cache-label">Historical Cache</span>
-              <span className="cache-value">{cacheInfo.historicalCacheSize || "0 MB"}</span>
+              <span className="cache-value">{cacheInfo.redis_info?.total_keys ?? "N/A"}</span>
             </div>
             <div className="cache-item">
               <span className="cache-label">Memory Usage</span>
-              <span className="cache-value">{cacheInfo.memoryUsage || "N/A"}</span>
+              <span className="cache-value">{cacheInfo.redis_info?.used_memory_human ?? "N/A"}</span>
             </div>
             <div className="cache-item">
               <span className="cache-label">Total Keys</span>
-              <span className="cache-value">{cacheInfo.totalKeys || 0}</span>
+              <span className="cache-value">{cacheInfo.redis_info?.total_keys ?? "N/A"}</span>
             </div>
             <div className="cache-item">
               <span className="cache-label">API Latency</span>
-              <span className="cache-value">{cacheInfo.apiLatency || "N/A"}</span>
+              <span className="cache-value">{cacheInfo.apiLatency ?? "N/A"}</span>
             </div>
           </div>
         </div>
       )}
 
       {/* INTERVAL SELECTOR */}
-      <div className="interval-selector">
-        <label className="interval-label">Default Interval for Historical Data:</label>
-        <select
-          value={interval}
-          onChange={(e) => setInterval(e.target.value)}
-          className="terminal-select"
-        >
-          {intervals.map((i) => (
-            <option key={i.value} value={i.value}>{i.label}</option>
-          ))}
-        </select>
-      </div>
     </div>
   );
 }

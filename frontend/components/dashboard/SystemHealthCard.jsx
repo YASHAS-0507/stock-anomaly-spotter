@@ -1,6 +1,6 @@
 import { formatPercent } from "@/utils/formatting";
 
-export default function SystemHealthCard({ validationStats }) {
+export default function SystemHealthCard({ validationStats, cacheInfo }) {
   const stats = validationStats || {
     total_candles: 0,
     valid_candles: 0,
@@ -9,15 +9,7 @@ export default function SystemHealthCard({ validationStats }) {
     duplicate_candles_detected: 0,
   };
 
-  // Mock Redis info (would come from API in production)
-  const redisInfo = {
-    connected: false,
-    cacheHitRate: "N/A",
-    historicalCacheSize: "0 MB",
-    memoryUsage: "N/A",
-    totalKeys: 0,
-    apiLatency: "N/A",
-  };
+  const redisInfo = cacheInfo || {};
 
   return (
     <div className="panel">
@@ -39,20 +31,20 @@ export default function SystemHealthCard({ validationStats }) {
 
           <div className="grid grid-cols-3 gap-md">
             <HealthMetric
-              label="Cache Hit Rate"
-              value={redisInfo.cacheHitRate}
+              label="Cache Size"
+              value={redisInfo.local_cache_entries ?? "N/A"}
               icon="🎯"
               status="neutral"
             />
             <HealthMetric
               label="Historical Cache"
-              value={redisInfo.historicalCacheSize}
+              value={redisInfo.redis_info?.total_keys ?? "N/A"}
               icon="💾"
               status="neutral"
             />
             <HealthMetric
               label="Memory Usage"
-              value={redisInfo.memoryUsage}
+              value={redisInfo.redis_info?.used_memory_human ?? "N/A"}
               icon="🧠"
               status="neutral"
             />
@@ -61,13 +53,13 @@ export default function SystemHealthCard({ validationStats }) {
           <div className="grid grid-cols-3 gap-md mt-md">
             <HealthMetric
               label="Total Keys"
-              value={redisInfo.totalKeys.toLocaleString()}
+              value={redisInfo.redis_info?.total_keys != null ? redisInfo.redis_info.total_keys.toLocaleString() : "N/A"}
               icon="🔑"
               status="neutral"
             />
             <HealthMetric
               label="API Latency"
-              value={redisInfo.apiLatency}
+              value={redisInfo.apiLatency ?? "N/A"}
               icon="⚡"
               status="neutral"
             />

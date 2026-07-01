@@ -23,7 +23,7 @@ export default function ModelDiagnosticsCard({ prediction, dominant, accBeat, ac
   const confidence = isHalted ? 0 : Math.max(probs.spike_up ?? 0, probs.spike_down ?? 0, probs.sideways ?? 0);
   const accuracy = prediction.metrics?.test_set_accuracy ?? 0;
   const baseline = prediction.metrics?.baseline_majority_accuracy ?? 0;
-  const regime = prediction.regime_snapshot?.regime_type || "UNKNOWN";
+  const regime = prediction.regime_snapshot?.regime_type || "N/A";
   const regimePermitted = prediction.regime_snapshot?.action_permitted ?? true;
   const inferenceTime = prediction.inference_time_ms || "N/A";
   const featureCount = prediction.feature_count || "N/A";

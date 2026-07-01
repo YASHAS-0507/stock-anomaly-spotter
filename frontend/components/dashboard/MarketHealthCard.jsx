@@ -33,11 +33,12 @@ export default function MarketHealthCard({ marketStatus, currentInterval }) {
     DISCONNECTED: "var(--red)",
   };
 
-  const feedStatus = marketStatus?.feed_status || "DISCONNECTED";
-  const marketPhase = marketStatus?.market_status || "UNKNOWN";
-  const latency = marketStatus?.latency_ms ?? 0;
+  const feedStatus = marketStatus?.feed_status || "N/A";
+  const marketPhase = marketStatus?.market_status || "N/A";
+  const latency = marketStatus?.latency_ms ?? "N/A";
   const latestCandle = marketStatus?.latest_candle || "N/A";
   const dataQuality = marketStatus?.data_quality || "N/A";
+  const serverTime = marketStatus?.current_time_ist || currentTime;
 
   return (
     <div className="panel">
@@ -100,7 +101,7 @@ export default function MarketHealthCard({ marketStatus, currentInterval }) {
           <div className="card-title">Time Sync</div>
           <div className="mt-md flex items-center justify-between">
             <span className="text-caption">Server Time (IST)</span>
-            <span className="text-metric-sm font-mono" id="ist-time">{currentTime}</span>
+            <span className="text-metric-sm font-mono" id="ist-time">{serverTime}</span>
           </div>
         </div>
       </div>
