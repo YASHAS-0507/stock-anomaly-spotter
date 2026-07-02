@@ -186,12 +186,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     print(f"HTTP ERROR INTERCEPTED: {exc.detail}")
-    return JSONResponse(status_code=200, content=SAFE_FALLBACK_PAYLOAD)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     print(f"VALIDATION ERROR INTERCEPTED: {exc.errors()}")
-    return JSONResponse(status_code=200, content=SAFE_FALLBACK_PAYLOAD)
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 # =====================================================================
 # CORE PIPELINE HELPER METHODS
