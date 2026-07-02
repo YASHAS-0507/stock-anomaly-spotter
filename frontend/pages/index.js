@@ -63,8 +63,6 @@ export default function Home() {
             <PortfolioCard  prediction={prediction} />
             <MarketHealthCard analysis={analysis}   />
           </div>
-        </div>
-      </header>
 
           {/* Row 3: Model Diagnostics · Explainability */}
           <div style={{
