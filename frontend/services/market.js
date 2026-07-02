@@ -1,63 +1,50 @@
-import { API_BASE } from "./api";
-
-export async function getMarketStatus() {
-  const res = await fetch(`${API_BASE}/api/market/status`);
-  if (!res.ok) throw new Error("Failed to fetch market status");
-  return res.json();
-}
-
-export async function getValidationStats() {
-  const res = await fetch(`${API_BASE}/api/market/validation/stats`);
-  if (!res.ok) throw new Error("Failed to fetch validation stats");
-  return res.json();
-}
-
-export async function getCacheInfo() {
-  const res = await fetch(`${API_BASE}/api/market/cache/info`);
-  if (!res.ok) throw new Error("Failed to fetch cache info");
-  return res.json();
-}
-
-export async function getHistoricalCandles(symbol, interval, period, limit = 500, useCache = true) {
-  const params = new URLSearchParams({
-    interval,
-    period,
-    limit: String(limit),
-    use_cache: String(useCache),
+export function getISTTime() {
+  return new Date().toLocaleTimeString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   });
-  const res = await fetch(`${API_BASE}/api/market/candles/${encodeURIComponent(symbol)}?${params}`);
-  if (!res.ok) throw new Error("Failed to fetch historical candles");
-  return res.json();
 }
 
-export async function getLatestCandle(symbol, interval, useRedis = true) {
-  const params = new URLSearchParams({ interval, use_redis: String(useRedis) });
-  const res = await fetch(`${API_BASE}/api/market/candles/${encodeURIComponent(symbol)}/latest?${params}`);
-  if (!res.ok) throw new Error("Failed to fetch latest candle");
-  return res.json();
-}
-
-export async function addCandle(candleData) {
-  const res = await fetch(`${API_BASE}/api/market/candles`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(candleData),
+export function getISTDate() {
+  return new Date().toLocaleDateString("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
   });
-  if (!res.ok) throw new Error("Failed to add candle");
-  return res.json();
 }
 
-export async function clearCache(symbol, interval) {
-  const params = new URLSearchParams();
-  if (symbol) params.append("symbol", symbol);
-  if (interval) params.append("interval", interval);
-  const res = await fetch(`${API_BASE}/api/market/cache/clear?${params}`, { method: "POST" });
-  if (!res.ok) throw new Error("Failed to clear cache");
-  return res.json();
+export function getMarketStatus() {
+  const now = new Date();
+  const ist = new Date(now.toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+  const day = ist.getDay(); // 0=Sun, 6=Sat
+  const total = ist.getHours() * 60 + ist.getMinutes();
+  if (day === 0 || day === 6) return "CLOSED";
+  // NSE: 9:15 AM – 3:30 PM IST
+  if (total >= 555 && total <= 930) return "OPEN";
+  return "CLOSED";
 }
 
-export async function getSupportedIntervals() {
-  const res = await fetch(`${API_BASE}/api/market/intervals`);
-  if (!res.ok) throw new Error("Failed to fetch intervals");
-  return res.json();
+export function formatINR(value) {
+  if (value == null || isNaN(value)) return "—";
+  const v = Number(value);
+  if (v >= 10000000) return `₹${(v / 10000000).toFixed(2)}Cr`;
+  if (v >= 100000) return `₹${(v / 100000).toFixed(2)}L`;
+  if (v >= 1000) return `₹${(v / 1000).toFixed(1)}k`;
+  return `₹${v.toFixed(2)}`;
+}
+
+export function extractRegime(prediction) {
+  if (!prediction) return "—";
+  if (prediction.regime_snapshot?.regime_type) return prediction.regime_snapshot.regime_type;
+  const exec = prediction.pipeline_routing_execution || "";
+  const match = exec.match(/Regime Shield Block \[([^\]]+)\]/);
+  if (match) return match[1];
+  const action = prediction.realtime_signal?.action || "";
+  if (action === "BUY NOW") return "BULL_TREND";
+  if (action.includes("SHORT") || action.includes("STAY OUT")) return "BEAR_TREND";
+  return "NORMAL";
 }

@@ -1,248 +1,97 @@
-import { useState, useEffect, useMemo } from "react";
-import { usePrediction } from "@/hooks/usePrediction";
-import { formatPrice, formatPercent, formatTimestamp } from "@/utils/formatting";
-import { getDominantClass, getAccuracyStatus, extractRiskPortfolio } from "@/utils/prediction";
-
-// Components - Layout
-import TopBar from "@/components/TopBar";
-import TickerInput from "@/components/TickerInput";
-
-// Components - Dashboard
-import LivePriceChart from "@/components/dashboard/LivePriceChart";
-import PredictionEngine from "@/components/dashboard/PredictionEngine";
-import TradeSetup from "@/components/dashboard/TradeSetup";
-import PortfolioCard from "@/components/dashboard/PortfolioCard";
-import MarketHealthCard from "@/components/dashboard/MarketHealthCard";
-import ModelDiagnosticsCard from "@/components/dashboard/ModelDiagnosticsCard";
-import ExplainabilityCard from "@/components/dashboard/ExplainabilityCard";
-import SystemHealthCard from "@/components/dashboard/SystemHealthCard";
-import MarketDataDashboard from "@/components/dashboard/MarketDataDashboard";
+import { usePrediction } from "../hooks/usePrediction";
+import TopBar               from "../components/TopBar";
+import TickerInput          from "../components/TickerInput";
+import LivePriceChart       from "../components/LivePriceChart";
+import PredictionEngine     from "../components/PredictionEngine";
+import TradeSetup           from "../components/TradeSetup";
+import PortfolioCard        from "../components/PortfolioCard";
+import MarketHealthCard     from "../components/MarketHealthCard";
+import ModelDiagnosticsCard from "../components/ModelDiagnosticsCard";
+import ExplainabilityCard   from "../components/ExplainabilityCard";
+import MarketDataDashboard  from "../components/MarketDataDashboard";
+import SystemHealthCard     from "../components/SystemHealthCard";
 
 export default function Home() {
-  const [ticker, setTicker] = useState("RELIANCE.NS");
-  const [period, setPeriod] = useState("1y");
-  const [horizon, setHorizon] = useState("5");
-  const [currentInterval, setCurrentInterval] = useState("1d");
-  const [refreshKey, setRefreshKey] = useState(0);
-
   const {
-    analysis,
-    prediction,
-    chartTrend,
-    loading,
-    error,
-    drag,
-    setDrag,
+    ticker, setTicker,
+    period, setPeriod,
+    horizon, setHorizon,
+    chartInterval, setChartInterval,
+    analysis, prediction,
+    loading, error, latency,
     runAnalysis,
-    handleUploadChart,
-    handleLogout,
-    clearError
   } = usePrediction();
 
-  // Extract nested data safely
-  const { risk, portfolio, explain, signal } = useMemo(() => 
-    prediction ? extractRiskPortfolio(prediction) : {}, 
-  [prediction]);
-
-  // Derived prediction data
-  const { dominant, probSideways, probSpikeUp, probSpikeDown } = useMemo(
-    () => getDominantClass(prediction),
-    [prediction]
-  );
-
-  const { beat: accBeat, tie: accTie, diff: accDiff } = useMemo(
-    () => getAccuracyStatus(prediction),
-    [prediction]
-  );
-
-  // Market status
-  const marketStatus = useMemo(() => ({
-    exchange: "NSE",
-    market_status: "WEEKEND",
-    feed_status: "DISCONNECTED",
-    latency_ms: 0,
-    latest_candle: "N/A",
-    data_quality: "N/A",
-  }), []);
-
-  // Handle analysis run
-  const handleRun = () => {
-    runAnalysis(ticker, period, horizon);
-    setRefreshKey(k => k + 1);
-  };
-
-  // Auto-refresh market data
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setRefreshKey(k => k + 1);
-    }, 10000);
-    return () => clearInterval(timer);
-  }, []);
-
   return (
-    <div className="terminal-layout">
-      {/* TOP HEADER */}
-      <header className="terminal-header panel">
-        <div className="header-left">
-          <div className="brand">
-            <div className="brand-dot" />
-            <div>
-              <div className="brand-name">Stock Anomaly Spotter</div>
-              <div className="brand-tag">Institutional Trading Terminal</div>
-            </div>
-          </div>
-          <div className="current-symbol">
-            <span className="text-label">Current Symbol</span>
-            <span className="text-title">{ticker}</span>
-          </div>
-        </div>
+    <div className="page">
+      <TopBar analysis={analysis} latency={latency} />
 
-        <div className="header-center">
-          <div className="market-status-indicator">
-            <span className="text-label">Market Status</span>
-            <div className="flex items-center gap-sm">
-              <span className={`badge-dot status-${marketStatus.market_status.toLowerCase()}`} />
-              <span className="text-title signal-hold">{marketStatus.market_status}</span>
-            </div>
-          </div>
-        </div>
+      <TickerInput
+        ticker={ticker}         setTicker={setTicker}
+        period={period}         setPeriod={setPeriod}
+        horizon={horizon}       setHorizon={setHorizon}
+        chartInterval={chartInterval} setChartInterval={setChartInterval}
+        onRun={runAnalysis}     loading={loading}
+      />
 
-        <div className="header-right">
-          <div className="flex items-center gap-md text-right">
-            <div>
-              <span className="text-label">Feed Status</span>
-              <div className="flex items-center gap-sm justify-end">
-                <span className={`badge-dot status-${marketStatus.feed_status.toLowerCase()}`} />
-                <span className="text-body signal-neutral">{marketStatus.feed_status}</span>
-              </div>
-            </div>
-            <div className="hidden md:block">
-              <span className="text-label">Latency</span>
-              <div className="flex items-center justify-end gap-sm">
-                <span className="text-metric-sm font-mono">{marketStatus.latency_ms}ms</span>
-              </div>
-            </div>
-            <div>
-              <span className="text-label">Current Time</span>
-              <div className="flex items-center justify-end gap-sm">
-                <span className="text-metric-sm font-mono" id="current-time">--:--:--</span>
-              </div>
-            </div>
+      {error && <div className="error-bar">⚠ {error}</div>}
+
+      {analysis && (
+        <div className="results">
+
+          {/* Row 1: Live chart (wider) + Prediction engine (sidebar) */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 340px",
+            gap: 16,
+            marginBottom: 16,
+            alignItems: "start",
+          }}>
+            <LivePriceChart analysis={analysis} />
+            <PredictionEngine prediction={prediction} />
+          </div>
+
+          {/* Row 2: Trade Setup · Portfolio · Market Health */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 16,
+            marginBottom: 16,
+            alignItems: "start",
+          }}>
+            <TradeSetup     prediction={prediction} />
+            <PortfolioCard  prediction={prediction} />
+            <MarketHealthCard analysis={analysis}   />
           </div>
         </div>
       </header>
 
-      {/* TICKER INPUT */}
-      <TickerInput
-        ticker={ticker}
-        period={period}
-        horizon={horizon}
-        currentInterval={currentInterval}
-        onTickerChange={e => setTicker(e.target.value.toUpperCase())}
-        onPeriodChange={e => setPeriod(e.target.value)}
-        onHorizonChange={e => setHorizon(e.target.value)}
-        onIntervalChange={e => setCurrentInterval(e.target.value)}
-        onRun={handleRun}
-        loading={loading}
-      />
-
-      {error && (
-        <div className="error-banner panel bg-sell" style={{ maxWidth: "1920px", margin: "0 auto var(--space-md)" }}>
-          <div className="panel-content flex items-center justify-between">
-            <span>⚠ {error}</span>
-            <button className="btn btn-ghost btn-sm" onClick={clearError}>Dismiss</button>
+          {/* Row 3: Model Diagnostics · Explainability */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 16,
+            marginBottom: 16,
+            alignItems: "start",
+          }}>
+            <ModelDiagnosticsCard prediction={prediction} />
+            <ExplainabilityCard   prediction={prediction} />
           </div>
+
+          {/* Row 4: Market Data Dashboard · System Health */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 16,
+            marginBottom: 16,
+            alignItems: "start",
+          }}>
+            <MarketDataDashboard analysis={analysis} prediction={prediction} />
+            <SystemHealthCard    latency={latency} />
+          </div>
+
         </div>
       )}
-
-      {/* MAIN GRID */}
-      <div style={{ maxWidth: "1920px", margin: "0 auto", width: "100%" }}>
-        <div className="terminal-main">
-          {/* LEFT COLUMN - 70% */}
-        
-                  {/* 1. LIVE PRICE CHART */}
-                  <LivePriceChart
-                    analysis={analysis}
-                    key="live-price-chart"
-                    currentInterval={currentInterval}
-                    onIntervalChange={setCurrentInterval}
-                  />
-
-                  {/* 2. PREDICTION ENGINE */}
-                  <PredictionEngine
-                    prediction={prediction}
-                    dominant={dominant}
-                    probSideways={probSideways}
-                    probSpikeUp={probSpikeUp}
-                    probSpikeDown={probSpikeDown}
-                    accBeat={accBeat}
-                    accTie={accTie}
-                    accDiff={accDiff}
-                    signal={signal}
-                    key="prediction-engine"
-                  />
-
-                  {/* 3. TRADE SETUP */}
-                  <TradeSetup
-                    risk={risk}
-                    portfolio={portfolio}
-                    signal={signal}
-                    key="trade-setup"
-                  />
-                </div>
-
-                {/* RIGHT COLUMN - 30% */}
-                <aside className="terminal-sidebar">
-                  {/* PORTFOLIO CARD */}
-                  <PortfolioCard
-                    portfolio={portfolio}
-                    risk={risk}
-                    key="portfolio-card"
-                  />
-
-                  {/* MARKET HEALTH CARD */}
-                  <MarketHealthCard
-                    marketStatus={marketStatus}
-                    currentInterval={currentInterval}
-                    key="market-health-card"
-                  />
-
-                  {/* MODEL DIAGNOSTICS CARD */}
-                  <ModelDiagnosticsCard
-                    prediction={prediction}
-                    dominant={dominant}
-                    accBeat={accBeat}
-                    accTie={accTie}
-                    accDiff={accDiff}
-                    key="model-diagnostics-card"
-                  />
-
-                  {/* EXPLAINABILITY CARD */}
-                  <ExplainabilityCard
-                    explain={explain}
-                    key="explainability-card"
-                  />
-
-                  {/* MARKET DATA DASHBOARD */}
-                  <MarketDataDashboard key="market-data-dashboard" />
-                </aside>
-              </div>
-
-              {/* BOTTOM SECTION - SYSTEM HEALTH */}
-              <div style={{ maxWidth: "1920px", margin: "0 auto", width: "100%" }}>
-                <div className="terminal-bottom">
-                  <SystemHealthCard
-                    validationStats={prediction ? {
-                      total_candles: 0,
-                      valid_candles: 0,
-                      invalid_candles: 0,
-                      missing_candles_detected: 0,
-                      duplicate_candles_detected: 0,
-                    } : null}
-                    key="system-health-card"
-                  />
-                </div>
-              </div>
     </div>
   );
 }

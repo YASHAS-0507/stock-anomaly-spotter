@@ -1,59 +1,44 @@
-import { useState, useCallback } from "react";
-import { analyze, predict, uploadChartImage, logout } from "@/services/api";
+import { useState } from "react";
+import { fetchAnalysis, fetchPrediction } from "../services/api";
 
 export function usePrediction() {
+  const [ticker, setTicker] = useState("RELIANCE.NS");
+  const [period, setPeriod] = useState("1y");
+  const [horizon, setHorizon] = useState(5);
+  const [chartInterval, setChartInterval] = useState("1d");
   const [analysis, setAnalysis] = useState(null);
   const [prediction, setPrediction] = useState(null);
-  const [chartTrend, setChartTrend] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [drag, setDrag] = useState(false);
+  const [latency, setLatency] = useState(null);
 
-  const runAnalysis = useCallback(async (ticker, period, horizon) => {
+  async function runAnalysis() {
     setLoading(true);
     setError(null);
+    const t0 = Date.now();
     try {
-      const [aRes, pRes] = await Promise.all([
-        analyze(ticker, period),
-        predict(ticker, period, horizon)
+      const [aData, pData] = await Promise.all([
+        fetchAnalysis(ticker, period),
+        fetchPrediction(ticker, period, horizon),
       ]);
-      setAnalysis(aRes);
-      setPrediction(pRes);
+      setLatency(Date.now() - t0);
+      setAnalysis(aData);
+      setPrediction(pData);
     } catch (e) {
       setError(e.message);
+      setLatency(null);
     } finally {
       setLoading(false);
     }
-  }, []);
-
-  const handleUploadChart = useCallback(async (file) => {
-    if (!file) return;
-    setError(null);
-    try {
-      const res = await uploadChartImage(file);
-      setChartTrend(res);
-    } catch (e) {
-      setError(e.message);
-    }
-  }, []);
-
-  const handleLogout = useCallback(async () => {
-    await logout();
-  }, []);
-
-  const clearError = useCallback(() => setError(null), []);
+  }
 
   return {
-    analysis,
-    prediction,
-    chartTrend,
-    loading,
-    error,
-    drag,
-    setDrag,
+    ticker, setTicker,
+    period, setPeriod,
+    horizon, setHorizon,
+    chartInterval, setChartInterval,
+    analysis, prediction,
+    loading, error, latency,
     runAnalysis,
-    handleUploadChart,
-    handleLogout,
-    clearError
   };
 }
