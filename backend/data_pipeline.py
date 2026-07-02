@@ -18,11 +18,11 @@ PREDICTION_HORIZON = 5             # Target forecasting horizon
 
 def derive_required_bars(period: str) -> int:
     """
-    Translates a period string into required core bars and adds a structural 
+    Translates a period string into required core bars and adds a structural
     padding allocation to guarantee indicator stabilization.
     """
-    # Core target window demands
-    target_days = {"1mo": 21, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504}.get(period, 252)
+    # Core target window demands - ensure minimum 90 rows for ML pipeline
+    target_days = {"1mo": 90, "3mo": 90, "6mo": 126, "1y": 252, "2y": 504}.get(period, 252)
     
     # Extract maximum lookback bounds across your indicators and lags
     max_warmup = max(max(ROLLING_WINDOWS), max(LAG_WINDOWS), PREDICTION_HORIZON)
@@ -38,11 +38,17 @@ def fetch_real_data(ticker: str, total_bars: int) -> pd.DataFrame:
     """Pull real OHLCV data using yfinance based on exact bar depth requirements."""
     import yfinance as yf
 
-    # Backtrack calendar timeline generously using a rough trading-to-calendar factor
+    # Calculate start date based on required bars
+    # 1 trading day ≈ 1.4 calendar days (accounting for weekends/holidays)
     approx_calendar_days = int(total_bars * 1.5)
-    start_date = (dt.date.today() - dt.timedelta(days=approx_calendar_days)).strftime("%Y-%m-%d")
-    
-    df = yf.download(ticker, start=start_date, end=dt.date.today().strftime("%Y-%m-%d"), progress=False, auto_adjust=True)
+    end_date = dt.date.today()
+    # Safety: ensure end_date is not in the future
+    if end_date > dt.date.today():
+        end_date = dt.date.today()
+    start_date = (end_date - dt.timedelta(days=approx_calendar_days)).strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+
+    df = yf.download(ticker, start=start_date, end=end_date_str, progress=False, auto_adjust=True)
     if df.empty:
         raise ValueError(f"No data returned for ticker '{ticker}'")
 
@@ -63,7 +69,7 @@ def fetch_real_data(ticker: str, total_bars: int) -> pd.DataFrame:
     # Guard against duplicate structural anomalies across columns
     df = df.loc[:, ~df.columns.duplicated()]
     df = df[["date", "open", "high", "low", "close", "volume"]]
-    
+
     # Enforce chronological ascending indexation order
     df = df.sort_values("date", ascending=True).reset_index(drop=True)
     return df
@@ -156,7 +162,7 @@ def get_price_data(ticker: str, period: str = "1y", allow_synthetic_fallback: bo
     """
     # 1. Compute dynamic total bars (Target + Buffer)
     total_required_bars = derive_required_bars(period)
-    target_visible_rows = {"1mo": 21, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504}.get(period, 252)
+    target_visible_rows = {"1mo": 90, "3mo": 90, "6mo": 126, "1y": 252, "2y": 504}.get(period, 252)
     
     try:
         # 2. Extract padded data

@@ -2,13 +2,14 @@
 regime_detector.py
 ------------------
 Stage 2 Market Regime Valve. Acts as an operational circuit breaker.
-Intercepts lowercase feature matrices, tracks Bollinger compressions, 
+Intercepts lowercase feature matrices, tracks Bollinger compressions,
 and enforces systematic data gates prior to downstream classification steps.
 """
 
 import pandas as pd
 import numpy as np
 from typing import Dict, Union, Any
+
 
 def detect_market_regime(df: pd.DataFrame) -> Dict[str, Any]:
     """
@@ -17,13 +18,13 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Any]:
 
     Args:
         df: DataFrame containing lowercase 'close' column data.
-            (minimum 200 rows required for reliable 200-day rolling operations)
+            (minimum 60 rows required for reliable indicator operations)
 
     Returns:
         Dict with regime classification, trading permissions, and telemetry metrics.
     """
     # 1. Force structural validation check using pipeline lowercase standards
-    if df is None or 'close' not in df.columns or len(df) < 200:
+    if df is None or 'close' not in df.columns or len(df) < 60:
         return {
             "regime_type": "INSUFFICIENT_DATA",
             "action_permitted": False,
@@ -32,34 +33,38 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Any]:
         }
 
     close = df['close']
+    available_rows = len(df)
 
-    # 2. Calculate SMAs (Trend Verification)
-    sma_50 = close.rolling(window=50).mean()
-    sma_200 = close.rolling(window=200).mean()
+    # 2. Calculate SMAs (Trend Verification) - Adaptive windows based on data availability
+    sma_long_window = min(200, max(50, available_rows - 10))  # At least 50, max 200, leave room for rolling
+    sma_short_window = min(50, max(20, available_rows // 4))
+
+    sma_short = close.rolling(window=sma_short_window).mean()
+    sma_long = close.rolling(window=sma_long_window).mean()
     current_price = float(close.iloc[-1])
 
     trend_strength = 0.0
     bull_trend = False
     bear_trend = False
 
-    if pd.notna(sma_50.iloc[-1]) and pd.notna(sma_200.iloc[-1]):
-        last_sma_50 = float(sma_50.iloc[-1])
-        last_sma_200 = float(sma_200.iloc[-1])
-        
-        if last_sma_200 > 0:
-            trend_strength = (last_sma_50 - last_sma_200) / last_sma_200
-            
-        bull_trend = (current_price > last_sma_50) and (last_sma_50 > last_sma_200)
-        bear_trend = (current_price < last_sma_50) and (last_sma_50 < last_sma_200)
+    if pd.notna(sma_short.iloc[-1]) and pd.notna(sma_long.iloc[-1]):
+        last_sma_short = float(sma_short.iloc[-1])
+        last_sma_long = float(sma_long.iloc[-1])
+
+        if last_sma_long > 0:
+            trend_strength = (last_sma_short - last_sma_long) / last_sma_long
+
+        bull_trend = (current_price > last_sma_short) and (last_sma_short > last_sma_long)
+        bear_trend = (current_price < last_sma_short) and (last_sma_short < last_sma_long)
 
     # 3. Volatility Calculation (Drop lookback NaNs to prevent type leaks)
     returns = close.pct_change()
     volatility_14d = (returns.rolling(window=14).std() * np.sqrt(252)).dropna()
-    
+
     if not volatility_14d.empty:
         current_vol = float(volatility_14d.iloc[-1])
         vol_1y = volatility_14d.iloc[-252:]
-        
+
         vol_mean = float(vol_1y.mean())
         vol_std = float(vol_1y.std())
 
@@ -73,20 +78,28 @@ def detect_market_regime(df: pd.DataFrame) -> Dict[str, Any]:
         vol_zscore = 0.0
         high_volatility = False
 
-    # 4. Bollinger Bandwidth (Squeeze Isolation)
-    sma_20 = close.rolling(window=20).mean()
-    std_20 = close.rolling(window=20).std()
+    # 4. Bollinger Bandwidth (Squeeze Isolation) - Adaptive window based on data availability
+    bb_window = min(20, max(10, available_rows // 5))  # Adaptive BB window
+    bw_ma_window = min(30, max(10, available_rows // 3))  # Adaptive MA window
 
-    bb_upper = sma_20 + (2 * std_20)
-    bb_lower = sma_20 - (2 * std_20)
-    
+    sma_bb = close.rolling(window=bb_window).mean()
+    std_bb = close.rolling(window=bb_window).std()
+
+    bb_upper = sma_bb + (2 * std_bb)
+    bb_lower = sma_bb - (2 * std_bb)
+
     # Wrap edge-case condition if moving average hits zero
-    bb_bandwidth = (bb_upper - bb_lower) / sma_20.replace(0, np.nan)
-    bb_bw_ma = bb_bandwidth.rolling(window=30).mean()
+    bb_bandwidth = (bb_upper - bb_lower) / sma_bb.replace(0, np.nan)
+    bb_bw_ma = bb_bandwidth.rolling(window=bw_ma_window).mean()
 
     sideways_squeeze = False
-    if pd.notna(bb_bandwidth.iloc[-1]) and pd.notna(bb_bw_ma.iloc[-1]):
-        sideways_squeeze = float(bb_bandwidth.iloc[-1]) < float(bb_bw_ma.iloc[-1])
+    # Only check squeeze if we have enough data for reliable MA (at least 2x MA window)
+    if available_rows >= bw_ma_window * 2:
+        if pd.notna(bb_bandwidth.iloc[-1]) and pd.notna(bb_bw_ma.iloc[-1]):
+            sideways_squeeze = float(bb_bandwidth.iloc[-1]) < float(bb_bw_ma.iloc[-1])
+    else:
+        # Not enough data for reliable squeeze detection
+        sideways_squeeze = False
 
     # 5. Resolve Regime Cascades
     regime_type = "NORMAL"
