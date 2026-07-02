@@ -1,25 +1,27 @@
 import { useState, useEffect } from "react";
-import { getISTTime, getMarketStatus } from "../services/market";
+import { getISTTime } from "../services/market";
+import { useWebSocket } from "../hooks/useWebSocket";
 
-export default function TopBar({ analysis, latency }) {
+export default function TopBar({ analysis, latency: propLatency }) {
   const [istTime, setIstTime] = useState("--:--:--");
-  const [marketStatus, setMarketStatus] = useState("CLOSED");
+  const ws = useWebSocket();
 
   useEffect(() => {
-    function tick() {
-      setIstTime(getISTTime());
-      setMarketStatus(getMarketStatus());
-    }
+    function tick() { setIstTime(getISTTime()); }
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, []);
 
-  const feedStatus = !analysis ? "—" : analysis.used_synthetic_data ? "SYNTHETIC" : "LIVE";
-  const feedColor = !analysis ? "var(--text-3)" : analysis.used_synthetic_data ? "var(--text-3)" : "var(--green)";
-  const latencyColor = !latency
+  const marketStatus = ws.marketStatus;
+  const displayLatency = ws.latency ?? propLatency;
+
+  const feedStatus = ws.connected ? "LIVE" : "DISCONNECTED";
+  const feedColor = ws.connected ? "var(--green)" : "var(--red)";
+
+  const latencyColor = !displayLatency
     ? "var(--text-3)"
-    : latency < 2000
+    : displayLatency < 2000
     ? "var(--green)"
     : "var(--red)";
 
@@ -52,7 +54,7 @@ export default function TopBar({ analysis, latency }) {
 
         <div style={{ display: "flex", gap: 6 }}>
           <span style={{ color: "var(--text-3)" }}>API</span>
-          <span style={{ color: latencyColor }}>{latency ? `${latency}ms` : "—"}</span>
+          <span style={{ color: latencyColor }}>{displayLatency ? `${displayLatency}ms` : "—"}</span>
         </div>
 
         <div style={{ color: "var(--cyan)", letterSpacing: "0.06em" }}>

@@ -15,7 +15,7 @@ import pandas as pd
 import math
 from typing import Dict, Any, Union, List
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -37,6 +37,8 @@ from explainability import generate_decision_reason
 from risk_engine import calculate_position_size
 from model import intelligence_core
 
+# Phase 2.1: WebSocket streaming
+from services.websocket_manager import websocket_manager
 # Market Data Layer (Phase 1)
 from services.market_data import market_data_manager, Interval
 from services.redis_manager import redis_manager
@@ -489,6 +491,18 @@ async def chart_trend(file: UploadFile = File(...)):
         raise ValueError(result.get("reason", "Could not read chart."))
 
     return result
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive; manager handles broadcasts
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(websocket)
+    except Exception:
+        websocket_manager.disconnect(websocket)
 
 if __name__ == "__main__":
     import uvicorn
