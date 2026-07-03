@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fetchAnalysis, fetchPrediction } from "../services/api";
+import { fetchAnalysis, fetchPrediction, fetchDecision } from "../services/api";
 
 export function usePrediction() {
   const [ticker, setTicker] = useState("RELIANCE.NS");
@@ -8,6 +8,7 @@ export function usePrediction() {
   const [chartInterval, setChartInterval] = useState("1d");
   const [analysis, setAnalysis] = useState(null);
   const [prediction, setPrediction] = useState(null);
+  const [decision, setDecision] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [latency, setLatency] = useState(null);
@@ -24,6 +25,14 @@ export function usePrediction() {
       setLatency(Date.now() - t0);
       setAnalysis(aData);
       setPrediction(pData);
+
+      // Decision engine runs after prediction resolves (not blocking the main pair)
+      try {
+        const dData = await fetchDecision(ticker, period, horizon);
+        setDecision(dData);
+      } catch (_) {
+        setDecision(null);
+      }
     } catch (e) {
       setError(e.message);
       setLatency(null);
@@ -37,7 +46,7 @@ export function usePrediction() {
     period, setPeriod,
     horizon, setHorizon,
     chartInterval, setChartInterval,
-    analysis, prediction,
+    analysis, prediction, decision,
     loading, error, latency,
     runAnalysis,
   };
