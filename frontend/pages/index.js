@@ -61,7 +61,7 @@ export default function Home() {
             alignItems: "start",
           }}>
             <TradeSetup     prediction={prediction} decision={decision} />
-            <PortfolioCard  prediction={prediction} />
+            <PortfolioCard />
             <MarketHealthCard analysis={analysis}   />
           </div>
 
