@@ -48,6 +48,10 @@ from routers.market import router as market_router
 # Phase 2.2: AI Decision Engine
 from decision_engine import generate_decision
 
+# Phase 2.3: Execution Queue + Decision Logging
+from execution_queue import execution_queue
+from decision_logger import decision_logger
+
 # Explicit safe ML import checks
 try:
     import xgboost as xgb
@@ -560,6 +564,21 @@ def get_decision(
             ticker=ticker,
             horizon=horizon,
         )
+
+        # Phase 2.3: queue + log
+        queue_entry = execution_queue.add(decision, ticker)
+        decision_logger.log(
+            ticker=ticker,
+            decision_payload=decision,
+            queue_entry=queue_entry,
+            inference_time_ms=decision.get("inference_time_ms", 0),
+        )
+        decision["queue"] = {
+            "trade_id":   queue_entry["trade_id"],
+            "status":     queue_entry["status"],
+            "queue_size": len(execution_queue.get_all()),
+        }
+
         return clean_json_data(decision)
 
     except Exception as exc:
@@ -589,6 +608,41 @@ def get_decision(
             "execution_permitted": False,
             "timestamp":           ts,
         }
+
+
+@app.get("/api/queue")
+def get_queue():
+    try:
+        return {
+            "entries": execution_queue.get_all(),
+            "stats":   execution_queue.get_stats(),
+        }
+    except Exception as exc:
+        return {"entries": [], "stats": {}, "error": str(exc)}
+
+
+@app.get("/api/queue/stats")
+def get_queue_stats():
+    try:
+        return execution_queue.get_stats()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/logs/recent")
+def get_logs_recent(n: int = Query(20)):
+    try:
+        return {"decisions": decision_logger.get_recent(n)}
+    except Exception as exc:
+        return {"decisions": [], "error": str(exc)}
+
+
+@app.get("/api/logs/stats")
+def get_logs_stats():
+    try:
+        return decision_logger.get_stats()
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @app.websocket("/ws")

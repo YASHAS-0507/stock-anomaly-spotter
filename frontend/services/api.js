@@ -29,3 +29,15 @@ export async function fetchDecision(ticker, period, horizon) {
   if (!res.ok) throw new Error("Decision fetch failed");
   return res.json();
 }
+
+export async function fetchQueue() {
+  const res = await fetch(`${API_BASE}/api/queue`);
+  if (!res.ok) throw new Error("Queue fetch failed");
+  return res.json();
+}
+
+export async function fetchLogStats() {
+  const res = await fetch(`${API_BASE}/api/logs/stats`);
+  if (!res.ok) throw new Error("Log stats fetch failed");
+  return res.json();
+}

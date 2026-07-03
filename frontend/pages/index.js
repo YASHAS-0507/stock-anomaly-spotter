@@ -8,6 +8,7 @@ import PortfolioCard        from "../components/PortfolioCard";
 import MarketHealthCard     from "../components/MarketHealthCard";
 import ModelDiagnosticsCard from "../components/ModelDiagnosticsCard";
 import ExplainabilityCard   from "../components/ExplainabilityCard";
+import ExecutionQueueCard   from "../components/ExecutionQueueCard";
 import MarketDataDashboard  from "../components/MarketDataDashboard";
 import SystemHealthCard     from "../components/SystemHealthCard";
 
@@ -76,7 +77,12 @@ export default function Home() {
             <ExplainabilityCard   prediction={prediction} />
           </div>
 
-          {/* Row 4: Market Data Dashboard · System Health */}
+          {/* Row 4: Execution Queue */}
+          <div style={{ marginBottom: 16 }}>
+            <ExecutionQueueCard decision={decision} loading={loading} />
+          </div>
+
+          {/* Row 5: Market Data Dashboard · System Health */}
           <div style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
