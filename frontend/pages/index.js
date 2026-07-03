@@ -17,7 +17,7 @@ export default function Home() {
     period, setPeriod,
     horizon, setHorizon,
     chartInterval, setChartInterval,
-    analysis, prediction,
+    analysis, prediction, decision,
     loading, error, latency,
     runAnalysis,
   } = usePrediction();
@@ -48,7 +48,7 @@ export default function Home() {
             alignItems: "start",
           }}>
             <LivePriceChart analysis={analysis} />
-            <PredictionEngine prediction={prediction} />
+            <PredictionEngine prediction={prediction} decision={decision} />
           </div>
 
           {/* Row 2: Trade Setup · Portfolio · Market Health */}
@@ -59,7 +59,7 @@ export default function Home() {
             marginBottom: 16,
             alignItems: "start",
           }}>
-            <TradeSetup     prediction={prediction} />
+            <TradeSetup     prediction={prediction} decision={decision} />
             <PortfolioCard  prediction={prediction} />
             <MarketHealthCard analysis={analysis}   />
           </div>

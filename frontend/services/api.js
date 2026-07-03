@@ -21,3 +21,11 @@ export async function fetchPrediction(ticker, period, horizon) {
   }
   return res.json();
 }
+
+export async function fetchDecision(ticker, period, horizon) {
+  const res = await fetch(
+    `${API_BASE}/api/decision?ticker=${encodeURIComponent(ticker)}&period=${period}&horizon=${horizon}`
+  );
+  if (!res.ok) throw new Error("Decision fetch failed");
+  return res.json();
+}

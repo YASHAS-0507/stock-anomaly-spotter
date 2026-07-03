@@ -45,6 +45,9 @@ from services.redis_manager import redis_manager
 from services.market_status import market_status_service
 from routers.market import router as market_router
 
+# Phase 2.2: AI Decision Engine
+from decision_engine import generate_decision
+
 # Explicit safe ML import checks
 try:
     import xgboost as xgb
@@ -491,6 +494,102 @@ async def chart_trend(file: UploadFile = File(...)):
         raise ValueError(result.get("reason", "Could not read chart."))
 
     return result
+
+@app.get("/api/decision")
+def get_decision(
+    ticker: str = Query(...),
+    period: str = Query("1y"),
+    horizon: int = Query(5),
+    spike_threshold: float = Query(0.05),
+):
+    """
+    Phase 2.2: AI Decision Engine endpoint.
+    Runs the same XGBoost pipeline as /api/predict, then synthesises
+    an institutional trade decision via decision_engine.generate_decision().
+    /api/predict is NOT modified — this endpoint is additive only.
+    """
+    try:
+        if not CASCADING_ENGINES_AVAILABLE:
+            raise ValueError("XGBoost or sklearn not available on this server.")
+
+        feature_df, used_synthetic, raw_df = _load_features(ticker, period, horizon=horizon)
+        feature_df = feature_df.sort_values("date").reset_index(drop=True)
+
+        if len(feature_df) < 45:
+            raise ValueError("Insufficient historical data.")
+
+        regime_snapshot = detect_market_regime(feature_df)
+
+        # XGBoost inference (identical feature set to /api/predict)
+        _xgb_cols = [
+            "return_zscore", "rsi", "macd", "macd_signal",
+            "macd_histogram", "bollinger_bandwidth", "daily_return",
+        ]
+        for col in _xgb_cols:
+            if col not in feature_df.columns:
+                feature_df[col] = 0.0
+
+        X = feature_df[_xgb_cols]
+        y = feature_df["next_day_up"].astype(int)
+        X_latest = feature_df[_xgb_cols].iloc[[-1]]
+        latest_close = float(feature_df["close"].iloc[-1])
+
+        X_train, _, y_train, _ = train_test_split(X, y, test_size=0.25, shuffle=False)
+
+        xgb_model = xgb.XGBClassifier(
+            max_depth=3, learning_rate=0.1, n_estimators=50,
+            random_state=42, eval_metric="logloss",
+        )
+        xgb_model.fit(X_train, y_train)
+        prob_price_up = float(xgb_model.predict_proba(X_latest)[0][1])
+
+        prediction_payload = {
+            "probabilities": {
+                "spike_up":   prob_price_up,
+                "spike_down": round(1.0 - prob_price_up, 4),
+                "sideways":   0.0,
+            }
+        }
+
+        decision = generate_decision(
+            feature_df=feature_df,
+            prediction_payload=prediction_payload,
+            regime_snapshot=regime_snapshot,
+            portfolio_state=PORTFOLIO_STATE,
+            latest_close=latest_close,
+            ticker=ticker,
+            horizon=horizon,
+        )
+        return clean_json_data(decision)
+
+    except Exception as exc:
+        from datetime import datetime, timezone, timedelta
+        ts = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%H:%M:%S IST")
+        return {
+            "decision":          "BLOCKED",
+            "signal":            "BLOCKED",
+            "confidence":        0.0,
+            "score":             0,
+            "risk":              "EXTREME",
+            "expected_return":   0.0,
+            "expected_drawdown": 0.0,
+            "rr_ratio":          0.0,
+            "position_size": {
+                "shares": 0, "value": 0.0,
+                "risk_amount": 0.0, "sizing_method": "error_fallback",
+            },
+            "entry_price": 0.0,
+            "stop_loss":   0.0,
+            "take_profit": {"tp1": 0.0, "tp2": 0.0, "tp3": 0.0},
+            "holding_period":      "—",
+            "explanation":         "Decision engine encountered an error.",
+            "rejection_reason":    str(exc),
+            "score_breakdown":     {"trend": 0, "momentum": 0, "volume": 0,
+                                    "regime": 0, "prediction": 0, "risk": 0},
+            "execution_permitted": False,
+            "timestamp":           ts,
+        }
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
