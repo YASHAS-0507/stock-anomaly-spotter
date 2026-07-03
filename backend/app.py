@@ -48,6 +48,16 @@ from routers.market import router as market_router
 # Phase 2.2: AI Decision Engine
 from decision_engine import generate_decision
 
+# Phase 2.3: Execution Queue + Decision Logging
+from execution_queue import execution_queue
+from decision_logger import decision_logger
+
+# System telemetry
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 # Explicit safe ML import checks
 try:
     import xgboost as xgb
@@ -560,6 +570,21 @@ def get_decision(
             ticker=ticker,
             horizon=horizon,
         )
+
+        # Phase 2.3: queue + log
+        queue_entry = execution_queue.add(decision, ticker)
+        decision_logger.log(
+            ticker=ticker,
+            decision_payload=decision,
+            queue_entry=queue_entry,
+            inference_time_ms=decision.get("inference_time_ms", 0),
+        )
+        decision["queue"] = {
+            "trade_id":   queue_entry["trade_id"],
+            "status":     queue_entry["status"],
+            "queue_size": len(execution_queue.get_all()),
+        }
+
         return clean_json_data(decision)
 
     except Exception as exc:
@@ -589,6 +614,89 @@ def get_decision(
             "execution_permitted": False,
             "timestamp":           ts,
         }
+
+
+@app.get("/api/queue")
+def get_queue():
+    try:
+        return {
+            "entries": execution_queue.get_all(),
+            "stats":   execution_queue.get_stats(),
+        }
+    except Exception as exc:
+        return {"entries": [], "stats": {}, "error": str(exc)}
+
+
+@app.get("/api/queue/stats")
+def get_queue_stats():
+    try:
+        return execution_queue.get_stats()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/logs/recent")
+def get_logs_recent(n: int = Query(20)):
+    try:
+        return {"decisions": decision_logger.get_recent(n)}
+    except Exception as exc:
+        return {"decisions": [], "error": str(exc)}
+
+
+@app.get("/api/logs/stats")
+def get_logs_stats():
+    try:
+        return decision_logger.get_stats()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/system/telemetry")
+def get_system_telemetry():
+    telemetry: Dict[str, Any] = {
+        "cpu_usage_percent":    "Unavailable",
+        "memory_usage_percent": "Unavailable",
+        "memory_used_mb":       "Unavailable",
+        "memory_total_mb":      "Unavailable",
+        "disk_usage_percent":   "Unavailable",
+        "disk_used_gb":         "Unavailable",
+        "disk_total_gb":        "Unavailable",
+        "redis_status":         "Unavailable",
+        "psutil_available":     psutil is not None,
+    }
+
+    if psutil is not None:
+        try:
+            # interval=0.1 gives a real (non-zero) reading on the first call
+            telemetry["cpu_usage_percent"] = round(psutil.cpu_percent(interval=0.1), 1)
+        except Exception as e:
+            print(f"[telemetry] cpu_percent error: {e}")
+
+        try:
+            mem = psutil.virtual_memory()
+            telemetry["memory_usage_percent"] = round(mem.percent, 1)
+            telemetry["memory_used_mb"]       = round(mem.used / 1024 / 1024, 1)
+            telemetry["memory_total_mb"]      = round(mem.total / 1024 / 1024, 1)
+        except Exception as e:
+            print(f"[telemetry] virtual_memory error: {e}")
+
+        try:
+            # Use "/" — works on Railway (Linux) and local Linux/macOS
+            disk = psutil.disk_usage("/")
+            telemetry["disk_usage_percent"] = round(disk.percent, 1)
+            telemetry["disk_used_gb"]       = round(disk.used / 1024 / 1024 / 1024, 2)
+            telemetry["disk_total_gb"]      = round(disk.total / 1024 / 1024 / 1024, 2)
+        except Exception as e:
+            print(f"[telemetry] disk_usage error: {e}")
+
+    # Redis status check
+    try:
+        redis_manager.client.ping()
+        telemetry["redis_status"] = "Connected"
+    except Exception:
+        telemetry["redis_status"] = "Unavailable"
+
+    return telemetry
 
 
 @app.websocket("/ws")
