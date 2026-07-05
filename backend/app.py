@@ -52,6 +52,9 @@ from decision_engine import generate_decision
 from execution_queue import execution_queue
 from decision_logger import decision_logger
 
+# Phase 2.4: Paper Trading Engine
+from paper_broker import paper_broker
+
 # System telemetry
 try:
     import psutil
@@ -697,6 +700,122 @@ def get_system_telemetry():
         telemetry["redis_status"] = "Unavailable"
 
     return telemetry
+
+
+# =====================================================================
+# PHASE 2.4: PAPER TRADING ENDPOINTS
+# =====================================================================
+
+class PaperExecuteRequest(BaseModel):
+    trade_id: str
+
+
+@app.post("/api/paper/execute")
+def paper_execute(req: PaperExecuteRequest):
+    """Execute a paper trade for an approved queue entry."""
+    try:
+        entries = execution_queue.get_all()
+        entry = next((e for e in entries if e["trade_id"] == req.trade_id), None)
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"Trade {req.trade_id} not found in queue")
+
+        if entry.get("status") not in ("approved", "pending"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Trade {req.trade_id} has status '{entry.get('status')}' and cannot be executed"
+            )
+
+        d = entry.get("decision", entry)
+        action    = d.get("decision", d.get("signal", "HOLD"))
+        if action not in ("BUY", "SELL"):
+            raise HTTPException(status_code=400, detail=f"Decision is {action}, not executable")
+
+        ticker    = entry.get("ticker", "UNKNOWN")
+        quantity  = int(d.get("position_size", {}).get("shares", 0) or 0)
+        price     = float(d.get("entry_price", 0) or 0)
+        stop_loss = float(d.get("stop_loss", 0) or 0)
+        tp_dict   = d.get("take_profit", {}) or {}
+        take_profit = float(tp_dict.get("tp1", price) or price)
+        reason    = d.get("explanation", "")
+
+        if quantity <= 0 or price <= 0:
+            raise HTTPException(status_code=400, detail="Invalid quantity or price in decision payload")
+
+        result = paper_broker.place_order(
+            symbol=ticker,
+            action=action,
+            quantity=quantity,
+            price=price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trade_id=req.trade_id,
+            reason=reason,
+        )
+
+        if result["success"]:
+            execution_queue.update_status(req.trade_id, "executed")
+
+        return clean_json_data(result)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/paper/portfolio")
+def paper_portfolio():
+    """Return current paper trading portfolio snapshot."""
+    try:
+        snapshot = paper_broker.get_portfolio_snapshot()
+        return clean_json_data(snapshot)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/paper/trades")
+def paper_trades(limit: int = Query(50, ge=1, le=200)):
+    """Return completed paper trade history."""
+    try:
+        trades = paper_broker.get_trade_history(limit=limit)
+        return clean_json_data({"trades": trades, "count": len(trades)})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/paper/reset")
+def paper_reset():
+    """Reset the paper trading portfolio to initial state."""
+    try:
+        paper_broker.reset()
+        return {"success": True, "message": "Paper portfolio reset to initial state"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/paper/positions/check")
+def paper_positions_check():
+    """Check open positions against latest market prices; auto-close SL/TP hits."""
+    try:
+        positions = paper_broker.portfolio.get("positions", {})
+        if not positions:
+            return clean_json_data({"auto_closed": [], "portfolio": paper_broker.get_portfolio_snapshot()})
+
+        current_prices: Dict[str, float] = {}
+        for sym in positions:
+            try:
+                # Fetch latest close for this symbol from market data manager
+                df, _ = get_price_data(sym, period="5d")
+                if df is not None and not df.empty:
+                    current_prices[sym] = float(df["Close"].iloc[-1])
+            except Exception:
+                pass
+
+        auto_closed = paper_broker.check_positions(current_prices)
+        snapshot    = paper_broker.get_portfolio_snapshot()
+        return clean_json_data({"auto_closed": auto_closed, "portfolio": snapshot})
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.websocket("/ws")
