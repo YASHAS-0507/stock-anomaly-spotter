@@ -10,3 +10,7 @@ xgboost==1.7.6
 lightgbm
 redis==5.0.1
 psutil
+smartapi-python
+pyotp
+websocket-client
+schedule
