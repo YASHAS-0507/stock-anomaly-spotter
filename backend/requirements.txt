@@ -14,3 +14,5 @@ smartapi-python
 pyotp
 websocket-client
 schedule
+feedparser
+groq==1.5.0
