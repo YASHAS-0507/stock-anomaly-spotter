@@ -6,15 +6,17 @@ const WS_BASE = (process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000")
 const MAX_BACKOFF_MS = 30_000;
 
 export function useWebSocket() {
-  const [connected, setConnected] = useState(false);
-  const [latency, setLatency] = useState(null);
-  const [lastMessage, setLastMessage] = useState(null);
-  const [marketStatus, setMarketStatus] = useState("CLOSED");
+  const [connected, setConnected]           = useState(false);
+  const [latency, setLatency]               = useState(null);
+  const [lastMessage, setLastMessage]       = useState(null);
+  const [marketStatus, setMarketStatus]     = useState("CLOSED");
+  const [tickerPrices, setTickerPrices]     = useState({});
+  const [wsSchedulerStatus, setWsSchedulerStatus] = useState(null);
 
-  const wsRef = useRef(null);
-  const backoffRef = useRef(1000);
+  const wsRef         = useRef(null);
+  const backoffRef    = useRef(1000);
   const retryTimerRef = useRef(null);
-  const mountedRef = useRef(true);
+  const mountedRef    = useRef(true);
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
@@ -48,6 +50,21 @@ export function useWebSocket() {
             setMarketStatus(msg.data?.market_status ?? "CLOSED");
           }
 
+          // Phase 3: live tick prices from Angel One feed
+          if (msg.type === "live_tick") {
+            const { ticker, price } = msg.data || {};
+            if (ticker && price != null) {
+              setTickerPrices((prev) => ({ ...prev, [ticker]: price }));
+            }
+          }
+
+          // Phase 3: scheduler summary broadcast (every 10s)
+          if (msg.type === "scheduler_status") {
+            setWsSchedulerStatus(msg.data || null);
+          }
+
+          // Phase 3: position/trade events — surface via lastMessage so
+          // consumers can trigger a REST refresh (position_update, trade_closed)
           setLastMessage(msg);
         } catch (_) {}
       };
@@ -89,5 +106,12 @@ export function useWebSocket() {
     };
   }, [connect]);
 
-  return { connected, latency, lastMessage, marketStatus };
+  return {
+    connected,
+    latency,
+    lastMessage,
+    marketStatus,
+    tickerPrices,
+    wsSchedulerStatus,
+  };
 }
