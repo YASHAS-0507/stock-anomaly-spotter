@@ -172,7 +172,33 @@ class IntradayDecisionEngine:
         vix_regime = regime.get("vix_regime") or ""
         mood_score = 0.75 if vix_regime in ("NORMAL", "LOW") else 0.40
 
-        technical_score = prob_up * 100.0          # 0–100
+        # ── New indicator signals (Day 17) ────────────────────────────────
+        adx_val    = float(features.get("adx",          20.0) or 20.0)
+        plus_di    = float(features.get("adx_plus_di",  20.0) or 20.0)
+        minus_di   = float(features.get("adx_minus_di", 20.0) or 20.0)
+        st_dir     = str(features.get("supertrend_direction", "neutral") or "neutral")
+        pivot_zone = str(features.get("pivot_zone", "between_s1_r1") or "between_s1_r1")
+
+        # ADX bonus: strong trending + bullish DI alignment (up to +10 pts)
+        adx_bonus = 0.0
+        if adx_val >= 25.0 and plus_di > minus_di:
+            adx_bonus = min(10.0, (adx_val - 25.0) * 0.4)
+
+        # Supertrend: bullish +8, bearish -8
+        st_bonus = 8.0 if st_dir == "bullish" else (-8.0 if st_dir == "bearish" else 0.0)
+
+        # Pivot zone: at resistance = penalty, at support = small bonus
+        pivot_bonus = 0.0
+        if pivot_zone == "above_r2":
+            pivot_bonus = -10.0
+        elif pivot_zone == "above_r1":
+            pivot_bonus = -5.0
+        elif pivot_zone == "below_s1":
+            pivot_bonus = 3.0
+
+        technical_score = max(0.0, min(100.0,
+            prob_up * 100.0 + adx_bonus + st_bonus + pivot_bonus
+        ))
         news_score      = intel_score * 100.0      # 0–100
         mood_score_100  = mood_score * 100.0       # 0–100
 
@@ -188,6 +214,9 @@ class IntradayDecisionEngine:
             "technical":   round(technical_score, 2),
             "news":        round(news_score, 2),
             "market_mood": round(mood_score_100, 2),
+            "adx":         round(adx_val, 1),
+            "supertrend":  st_dir,
+            "pivot_zone":  pivot_zone,
         }
 
         # ── 6. Score gate ─────────────────────────────────────────────────
@@ -215,17 +244,22 @@ class IntradayDecisionEngine:
         reasoning = (
             f"{setup_type} setup confirmed. "
             f"Score={combined:.0f}, ML prob_up={prob_up:.0%}, "
-            f"VIX regime={vix_regime or 'NORMAL'}."
+            f"VIX regime={vix_regime or 'NORMAL'}, "
+            f"ADX={adx_val:.0f} ({st_dir} trend), "
+            f"pivot zone={pivot_zone}."
         )
         return {
-            "signal":             "BUY",
-            "setup_type":         setup_type,
-            "combined_score":     int(combined),
-            "score_breakdown":    score_breakdown,
-            "ml_confidence":      round(prob_up, 4),
+            "signal":              "BUY",
+            "setup_type":          setup_type,
+            "combined_score":      int(combined),
+            "score_breakdown":     score_breakdown,
+            "ml_confidence":       round(prob_up, 4),
             "execution_permitted": True,
-            "rejection_reason":   None,
-            "reasoning":          reasoning,
+            "rejection_reason":    None,
+            "reasoning":           reasoning,
+            "adx":                 round(adx_val, 1),
+            "supertrend":          st_dir,
+            "pivot_zone":          pivot_zone,
         }
 
 
