@@ -1019,6 +1019,16 @@ def shadow_report():
         return {"error": str(exc)}
 
 
+@app.get("/api/expiry/today")
+def expiry_today():
+    """Return F&O expiry context for today including risk multipliers."""
+    try:
+        from expiry.expiry_calendar import expiry_calendar
+        return expiry_calendar.get_expiry_context()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/health/full")
 def full_health_check():
     """Return complete system health for deployment readiness checks."""
