@@ -14,3 +14,4 @@ frontend/.env.local
 # OS
 .DS_Store
 backend/models/*.pkl
+backend/shadow/*.jsonl
