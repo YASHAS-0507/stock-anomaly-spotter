@@ -55,6 +55,12 @@ from decision_logger import decision_logger
 # Phase 2.4: Paper Trading Engine
 from paper_broker import paper_broker
 
+# Phase 3: Autonomous Scheduler + Live Trading
+import threading as _threading
+from scheduler.market_scheduler import market_scheduler
+from broker.auto_paper_broker import auto_broker
+from shadow.shadow_manager import shadow_manager
+
 # System telemetry
 try:
     import psutil
@@ -816,6 +822,147 @@ def paper_positions_check():
         return clean_json_data({"auto_closed": auto_closed, "portfolio": snapshot})
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# =====================================================================
+# PHASE 3: SCHEDULER CONTROL ENDPOINTS
+# =====================================================================
+
+@app.post("/api/scheduler/start")
+def start_scheduler():
+    """Start the autonomous market scheduler in a background thread."""
+    try:
+        is_trading = market_scheduler.is_trading_day()
+        if market_scheduler.running:
+            return {"status": "already_running", "message": "Scheduler is already running", "is_trading_day": is_trading}
+        t = _threading.Thread(target=market_scheduler.start, daemon=True, name="market-scheduler")
+        t.start()
+        return {"status": "started", "message": "Scheduler started in background thread", "is_trading_day": is_trading}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc), "is_trading_day": False}
+
+
+@app.post("/api/scheduler/stop")
+def stop_scheduler():
+    """Stop the autonomous market scheduler."""
+    try:
+        market_scheduler.stop()
+        return {"status": "stopped", "message": "Scheduler stopped and positions squared off"}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+@app.post("/api/scheduler/pause")
+def pause_scheduler():
+    """Pause new trade execution (open positions continue to be monitored)."""
+    try:
+        auto_broker.pause()
+        return {"status": "ok", "paused": True}
+    except Exception as exc:
+        return {"status": "error", "paused": False, "message": str(exc)}
+
+
+@app.post("/api/scheduler/resume")
+def resume_scheduler():
+    """Resume new trade execution after a pause."""
+    try:
+        auto_broker.resume()
+        return {"status": "ok", "paused": False}
+    except Exception as exc:
+        return {"status": "error", "paused": True, "message": str(exc)}
+
+
+@app.post("/api/scheduler/emergency-stop")
+def emergency_stop_scheduler():
+    """Emergency stop: square off all positions immediately and halt all trading."""
+    try:
+        closed = auto_broker.emergency_stop(current_prices={})
+        return {
+            "status": "emergency_stopped",
+            "positions_closed": len(closed),
+            "message": f"Emergency stop triggered — {len(closed)} position(s) squared off",
+        }
+    except Exception as exc:
+        return {"status": "error", "positions_closed": 0, "message": str(exc)}
+
+
+@app.get("/api/scheduler/status")
+def scheduler_status():
+    """Return full scheduler and broker status."""
+    try:
+        from datetime import datetime, timezone, timedelta
+        _IST = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(_IST)
+        now_mins = now.hour * 60 + now.minute
+        market_open = (
+            market_scheduler.is_trading_day(now.date())
+            and (9 * 60 + 15) <= now_mins <= (15 * 60 + 30)
+        )
+        last_refresh = market_scheduler.last_intelligence_refresh
+        return {
+            "scheduler_running":        market_scheduler.running,
+            "market_open":              market_open,
+            "watchlist":                market_scheduler.watchlist,
+            "intelligence_last_refresh": last_refresh.strftime("%Y-%m-%d %H:%M:%S IST") if last_refresh else None,
+            "broker":                   auto_broker.get_portfolio_snapshot(),
+            "daily_limits":             auto_broker.check_daily_limits(),
+            "shadow_report":            shadow_manager.get_weekly_report(),
+        }
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+# =====================================================================
+# PHASE 3: LIVE DATA ENDPOINTS
+# =====================================================================
+
+@app.get("/api/live/positions")
+def live_positions():
+    """Return current open positions and portfolio snapshot."""
+    try:
+        return auto_broker.get_portfolio_snapshot()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/live/watchlist")
+def live_watchlist():
+    """Return active watchlist and cached intelligence."""
+    try:
+        return {
+            "watchlist":    market_scheduler.watchlist,
+            "count":        len(market_scheduler.watchlist),
+            "intelligence": market_scheduler.intelligence_cache,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/live/trades/today")
+def live_trades_today():
+    """Return today's completed trades (newest first, up to 50)."""
+    try:
+        return auto_broker.get_trade_history(limit=50)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/live/prices")
+def live_prices():
+    """Return latest tick prices for all tracked tickers."""
+    try:
+        return market_scheduler.current_prices
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/shadow/report")
+def shadow_report():
+    """Return shadow agents weekly performance report."""
+    try:
+        return shadow_manager.get_weekly_report()
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @app.websocket("/ws")
