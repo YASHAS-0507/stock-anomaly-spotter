@@ -94,6 +94,18 @@ _DEFAULTS: dict = {
     "prev_poc_distance_pct":   None,
     "at_prev_poc":             False,
     "volume_profile_strength": "NORMAL",
+    # Fair Value Gaps (Day 19)
+    "fvg_bullish_exists":        False,
+    "fvg_bullish_top":           None,
+    "fvg_bullish_bottom":        None,
+    "fvg_bearish_exists":        False,
+    "fvg_bearish_top":           None,
+    "fvg_bearish_bottom":        None,
+    "price_in_fvg":              False,
+    "price_in_bullish_fvg":      False,
+    "price_in_bearish_fvg":      False,
+    "nearest_fvg_distance_pct":  0.0,
+    "fvg_count":                 0,
 }
 
 
@@ -256,6 +268,10 @@ class IntradayFeatures:
         # ── Volume Profile (Day 18) ───────────────────────────────────────
         vp_features = self.add_volume_profile(candles_5min, price)
         result.update(vp_features)
+
+        # ── Fair Value Gaps (Day 19) ──────────────────────────────────────
+        fvg_features = self.add_fair_value_gaps(candles_5min, price)
+        result.update(fvg_features)
 
         # ── Time context ──────────────────────────────────────────────────
         now_ist = datetime.now(IST)
@@ -473,6 +489,136 @@ class IntradayFeatures:
             "prev_poc_distance_pct":   prev_poc_dist,
             "at_prev_poc":             at_prev_poc,
             "volume_profile_strength": vp_strength,
+        }
+
+    # ──────────────────────────────────────────────────────
+    # Fair Value Gaps (Day 19)
+    # ──────────────────────────────────────────────────────
+
+    def add_fair_value_gaps(
+        self,
+        candles: list,
+        current_price: float,
+        lookback: int = 20,
+    ) -> dict:
+        _defaults = {
+            "fvg_bullish_exists":       False,
+            "fvg_bullish_top":          None,
+            "fvg_bullish_bottom":       None,
+            "fvg_bearish_exists":       False,
+            "fvg_bearish_top":          None,
+            "fvg_bearish_bottom":       None,
+            "price_in_fvg":             False,
+            "price_in_bullish_fvg":     False,
+            "price_in_bearish_fvg":     False,
+            "nearest_fvg_distance_pct": 0.0,
+            "fvg_count":                0,
+        }
+        try:
+            return self._fair_value_gaps(candles, current_price, lookback)
+        except Exception as exc:
+            logger.warning("[features] add_fair_value_gaps() failed: %s", exc)
+            return _defaults
+
+    def _fair_value_gaps(
+        self,
+        candles: list,
+        current_price: float,
+        lookback: int,
+    ) -> dict:
+        _empty = {
+            "fvg_bullish_exists":       False,
+            "fvg_bullish_top":          None,
+            "fvg_bullish_bottom":       None,
+            "fvg_bearish_exists":       False,
+            "fvg_bearish_top":          None,
+            "fvg_bearish_bottom":       None,
+            "price_in_fvg":             False,
+            "price_in_bullish_fvg":     False,
+            "price_in_bearish_fvg":     False,
+            "nearest_fvg_distance_pct": 0.0,
+            "fvg_count":                0,
+        }
+        if len(candles) < 3:
+            return _empty
+
+        scan_window = candles[-lookback:] if len(candles) > lookback else candles
+
+        # (bottom, top) tuples for unfilled FVGs
+        bullish_fvgs: list = []
+        bearish_fvgs: list = []
+
+        for i in range(len(scan_window) - 2):
+            c1 = scan_window[i]
+            c3 = scan_window[i + 2]
+
+            h1 = float(c1.get("high", 0) or 0)
+            l1 = float(c1.get("low",  0) or 0)
+            h3 = float(c3.get("high", 0) or 0)
+            l3 = float(c3.get("low",  0) or 0)
+
+            # Bullish FVG: gap between candle1.high and candle3.low
+            if h1 > 0 and l3 > 0 and h1 < l3:
+                # Unfilled if price has not fallen back below the gap bottom
+                if current_price > h1:
+                    bullish_fvgs.append((h1, l3))
+
+            # Bearish FVG: gap between candle3.high and candle1.low
+            if l1 > 0 and h3 > 0 and l1 > h3:
+                # Unfilled if price has not risen back above the gap top
+                if current_price < l1:
+                    bearish_fvgs.append((h3, l1))
+
+        fvg_count = len(bullish_fvgs) + len(bearish_fvgs)
+
+        price_in_bullish_fvg = any(b <= current_price <= t for b, t in bullish_fvgs)
+        price_in_bearish_fvg = any(b <= current_price <= t for b, t in bearish_fvgs)
+        price_in_fvg         = price_in_bullish_fvg or price_in_bearish_fvg
+
+        # Nearest bullish FVG
+        nearest_bull     = None
+        bull_dist        = float("inf")
+        for b, t in bullish_fvgs:
+            if b <= current_price <= t:
+                dist = 0.0
+            elif current_price > t:
+                dist = (current_price - t) / t * 100 if t > 0 else float("inf")
+            else:
+                dist = (b - current_price) / b * 100 if b > 0 else float("inf")
+            if dist < bull_dist:
+                bull_dist    = dist
+                nearest_bull = (b, t)
+
+        # Nearest bearish FVG
+        nearest_bear = None
+        bear_dist    = float("inf")
+        for b, t in bearish_fvgs:
+            if b <= current_price <= t:
+                dist = 0.0
+            elif current_price < b:
+                dist = (b - current_price) / b * 100 if b > 0 else float("inf")
+            else:
+                dist = (current_price - t) / t * 100 if t > 0 else float("inf")
+            if dist < bear_dist:
+                bear_dist    = dist
+                nearest_bear = (b, t)
+
+        nearest_dist = min(bull_dist, bear_dist)
+        if nearest_dist == float("inf"):
+            nearest_dist = 0.0
+
+        return {
+            "fvg_bullish_exists":       len(bullish_fvgs) > 0,
+            "fvg_bullish_top":          round(nearest_bull[1], 2) if nearest_bull else None,
+            "fvg_bullish_bottom":       round(nearest_bull[0], 2) if nearest_bull else None,
+            "fvg_bearish_exists":       len(bearish_fvgs) > 0,
+            "fvg_bearish_top":          round(nearest_bear[1], 2) if nearest_bear else None,
+            "fvg_bearish_bottom":       round(nearest_bear[0], 2) if nearest_bear else None,
+            "price_in_fvg":             price_in_fvg,
+            "price_in_bullish_fvg":     price_in_bullish_fvg,
+            "price_in_bearish_fvg":     price_in_bearish_fvg,
+            "nearest_fvg_distance_pct": round(nearest_dist, 4),
+            "fvg_count":                fvg_count,
         }
 
 

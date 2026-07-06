@@ -69,7 +69,7 @@ class MarketScanner:
             trend_score, volume_surge_score,
             atr_pct, rsi, volume_surge_ratio,
             latest_close, avg_volume, ema21,
-            scanned_at
+            scanned_at, gap_info
         }
         """
         tickers = list(NIFTY_50_TOKENS.keys())
@@ -102,6 +102,27 @@ class MarketScanner:
                 filtered.append(stock)
             if len(filtered) >= TOP_N:
                 break
+
+        # Add gap classification for each candidate
+        for stock in filtered:
+            try:
+                ticker     = stock["ticker"]
+                avg_volume = float(stock.get("avg_volume", 0) or 0)
+                prev_day   = data_provider.get_previous_day_ohlcv(ticker)
+                prev_close = float(prev_day.get("close", 0) or 0)
+                if prev_close <= 0:
+                    prev_close = float(stock.get("latest_close", 1.0) or 1.0)
+                # At 8am, today's open is unknown; use prev_close as proxy
+                stock["gap_info"] = self.classify_opening_gap(
+                    ticker=ticker,
+                    prev_close=prev_close,
+                    open_price=prev_close,
+                    open_volume=float(prev_day.get("volume", avg_volume) or avg_volume),
+                    avg_volume=avg_volume,
+                )
+            except Exception as exc:
+                logger.debug("[scanner] gap_info failed for %s: %s", stock.get("ticker"), exc)
+                stock["gap_info"] = None
 
         logger.info("[scanner] Scan complete — %d candidates selected.", len(filtered))
         return filtered
@@ -216,3 +237,70 @@ class MarketScanner:
         rsi   = 100.0 - (100.0 / (1.0 + rs))
         val   = float(rsi.iloc[-1])
         return max(0.0, min(100.0, val if not np.isnan(val) else 50.0))
+
+    def classify_opening_gap(
+        self,
+        ticker: str,
+        prev_close: float,
+        open_price: float,
+        open_volume: float,
+        avg_volume: float,
+    ) -> dict:
+        """
+        Classifies the opening gap for a stock.
+
+        Gap size thresholds (NSE fill-rate statistics):
+          FLAT   (<0.1%)   : fill probability 0.95 → NO_TRADE
+          COMMON (0.1-0.3%): fill probability 0.75 → FADE_GAP
+          MEDIUM (0.3-0.8%): fill probability 0.45 → WAIT_AND_SEE
+          LARGE  (>=0.8%)  : fill probability 0.20 → TRADE_DIRECTION
+        """
+        if prev_close <= 0:
+            return {
+                "gap_pct":           0.0,
+                "gap_direction":     "FLAT",
+                "gap_type":          "FLAT",
+                "fill_probability":  0.95,
+                "gap_strategy":      "NO_TRADE",
+                "volume_confirmed":  False,
+                "gift_nifty_aligned": False,
+            }
+
+        gap_pct = round((open_price - prev_close) / prev_close * 100, 4)
+        abs_gap = abs(gap_pct)
+
+        if gap_pct > 0.05:
+            direction = "UP"
+        elif gap_pct < -0.05:
+            direction = "DOWN"
+        else:
+            direction = "FLAT"
+
+        if abs_gap < 0.1:
+            gap_type   = "FLAT"
+            fill_prob  = 0.95
+            strategy   = "NO_TRADE"
+        elif abs_gap < 0.3:
+            gap_type   = "COMMON"
+            fill_prob  = 0.75
+            strategy   = "FADE_GAP"
+        elif abs_gap < 0.8:
+            gap_type   = "MEDIUM"
+            fill_prob  = 0.45
+            strategy   = "WAIT_AND_SEE"
+        else:
+            gap_type   = "LARGE"
+            fill_prob  = 0.20
+            strategy   = "TRADE_DIRECTION"
+
+        volume_confirmed = (open_volume > avg_volume * 1.3) if avg_volume > 0 else False
+
+        return {
+            "gap_pct":            gap_pct,
+            "gap_direction":      direction,
+            "gap_type":           gap_type,
+            "fill_probability":   fill_prob,
+            "gap_strategy":       strategy,
+            "volume_confirmed":   volume_confirmed,
+            "gift_nifty_aligned": False,  # placeholder until GIFT Nifty data available
+        }

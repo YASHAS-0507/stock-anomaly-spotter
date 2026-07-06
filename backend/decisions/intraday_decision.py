@@ -220,6 +220,24 @@ class IntradayDecisionEngine:
         elif vp_strength == "WEAK":
             base -= 3
 
+        # Fair Value Gap adjustments (Day 19)
+        if features.get("price_in_bullish_fvg", False):
+            base += 10
+        if features.get("price_in_bearish_fvg", False):
+            base -= 12
+        if features.get("fvg_bullish_exists", False):
+            fvg_dist = features.get("nearest_fvg_distance_pct", 999)
+            if fvg_dist < 0.5:
+                base += 5
+        if features.get("fvg_count", 0) > 5:
+            base -= 4
+
+        fvg_signal = (
+            "BULLISH_FVG" if features.get("price_in_bullish_fvg", False)
+            else "BEARISH_FVG" if features.get("price_in_bearish_fvg", False)
+            else "NO_FVG"
+        )
+
         technical_score = max(0.0, min(100.0, base))
         news_score      = intel_score * 100.0      # 0–100
         mood_score_100  = mood_score * 100.0       # 0–100
@@ -249,24 +267,28 @@ class IntradayDecisionEngine:
 
         # ── 6. Score gate ─────────────────────────────────────────────────
         if combined < cfg["min_combined_score"]:
-            return _hold(
+            result = _hold(
                 f"Combined score {combined:.0f} < threshold {cfg['min_combined_score']}",
                 combined_score=int(combined),
                 setup_type=setup_type,
                 score_breakdown=score_breakdown,
                 ml_confidence=prob_up,
             )
+            result["fvg_signal"] = fvg_signal
+            return result
 
         # ── 7. ML confidence gate ─────────────────────────────────────────
         setup_min_conf = SETUPS[setup_type]["min_ml_confidence"]
         if prob_up < setup_min_conf:
-            return _hold(
+            result = _hold(
                 f"ML confidence {prob_up:.2f} < {setup_type} threshold {setup_min_conf}",
                 combined_score=int(combined),
                 setup_type=setup_type,
                 score_breakdown=score_breakdown,
                 ml_confidence=prob_up,
             )
+            result["fvg_signal"] = fvg_signal
+            return result
 
         # ── BUY ───────────────────────────────────────────────────────────
         reasoning = (
@@ -295,6 +317,7 @@ class IntradayDecisionEngine:
                 features.get("price_at_val", False) or
                 features.get("at_prev_poc",  False)
             ),
+            "fvg_signal":          fvg_signal,
         }
 
 
