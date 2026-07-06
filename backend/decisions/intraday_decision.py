@@ -238,6 +238,34 @@ class IntradayDecisionEngine:
             else "NO_FVG"
         )
 
+        # Wyckoff adjustments (Day 20)
+        wyckoff_bias = features.get("wyckoff_bias", "NEUTRAL")
+        if wyckoff_bias == "STRONG_BULL":
+            base += 12
+        elif wyckoff_bias == "BULL":
+            base += 8
+        elif wyckoff_bias == "BEAR":
+            base -= 10
+        elif wyckoff_bias == "STRONG_BEAR":
+            base -= 14
+        elif wyckoff_bias == "RANGING":
+            base -= 3
+
+        if features.get("wyckoff_spring_active", False):
+            if features.get("wyckoff_spring_follow_through"):
+                base += 8
+            else:
+                base += 4
+
+        if features.get("wyckoff_upthrust_active", False):
+            base -= 8
+
+        cause_bars = features.get("wyckoff_cause_length_bars", 0)
+        if cause_bars > 40:
+            base += 3
+        elif cause_bars > 25:
+            base += 1
+
         technical_score = max(0.0, min(100.0, base))
         news_score      = intel_score * 100.0      # 0–100
         mood_score_100  = mood_score * 100.0       # 0–100
@@ -318,6 +346,9 @@ class IntradayDecisionEngine:
                 features.get("at_prev_poc",  False)
             ),
             "fvg_signal":          fvg_signal,
+            "wyckoff_bias":        features.get("wyckoff_bias", "NEUTRAL"),
+            "wyckoff_spring":      features.get("wyckoff_spring_active"),
+            "wyckoff_range_type":  features.get("wyckoff_range_type"),
         }
 
 
@@ -336,9 +367,11 @@ def _match_setup(features: dict, intelligence: dict) -> Optional[str]:
     pvwap_pct = abs(float(features.get("price_vs_vwap_pct", 999.0) or 999.0))
 
     # ── ORB_BREAKOUT ──────────────────────────────────────────────────────
+    # Suppress if Wyckoff upthrust signals price is near resistance falsely
     if (features.get("orb_breakout") is True
             and vol_ratio >= SETUPS["ORB_BREAKOUT"]["required"]["volume_ratio_min"]
-            and features.get("trading_window") == SETUPS["ORB_BREAKOUT"]["required"]["trading_window"]):
+            and features.get("trading_window") == SETUPS["ORB_BREAKOUT"]["required"]["trading_window"]
+            and not features.get("wyckoff_upthrust_active", False)):
         return "ORB_BREAKOUT"
 
     # ── VWAP_BOUNCE ───────────────────────────────────────────────────────

@@ -13,8 +13,16 @@ Never raises — returns defaults when data is insufficient.
 
 import logging
 import math
+import os
+import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, _BACKEND_ROOT)
+
+from wyckoff.wyckoff_detector import wyckoff_detector
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +114,25 @@ _DEFAULTS: dict = {
     "price_in_bearish_fvg":      False,
     "nearest_fvg_distance_pct":  0.0,
     "fvg_count":                 0,
+    # Wyckoff (Day 20)
+    "wyckoff_range_type":            "NONE",
+    "wyckoff_in_range":              False,
+    "wyckoff_range_support":         None,
+    "wyckoff_range_resistance":      None,
+    "wyckoff_spring_active":         False,
+    "wyckoff_spring_depth_atr":      0.0,
+    "wyckoff_spring_volume_ratio":   0.0,
+    "wyckoff_spring_follow_through": False,
+    "wyckoff_upthrust_active":       False,
+    "wyckoff_upthrust_depth_atr":    0.0,
+    "wyckoff_breakout_confirmed":    False,
+    "wyckoff_breakdown_confirmed":   False,
+    "wyckoff_breakout_strength":     0.0,
+    "wyckoff_post_accumulation":     False,
+    "wyckoff_post_distribution":     False,
+    "wyckoff_cause_length_bars":     0,
+    "wyckoff_vi_ratio":              1.0,
+    "wyckoff_bias":                  "NEUTRAL",
 }
 
 
@@ -272,6 +299,15 @@ class IntradayFeatures:
         # ── Fair Value Gaps (Day 19) ──────────────────────────────────────
         fvg_features = self.add_fair_value_gaps(candles_5min, price)
         result.update(fvg_features)
+
+        # ── Wyckoff analysis (Day 20) ────────────────────────────────────
+        wyckoff_features = wyckoff_detector.detect(
+            candles=candles_5min,
+            current_price=price,
+            atr=result.get("atr_14", 0.0),
+            adx=result.get("adx", 20.0),
+        )
+        result.update(wyckoff_features)
 
         # ── Time context ──────────────────────────────────────────────────
         now_ist = datetime.now(IST)
