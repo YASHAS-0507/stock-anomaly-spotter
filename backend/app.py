@@ -965,6 +965,53 @@ def shadow_report():
         return {"error": str(exc)}
 
 
+@app.get("/api/health/full")
+def full_health_check():
+    """Return complete system health for deployment readiness checks."""
+    from datetime import datetime, timezone, timedelta
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    ts = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
+
+    checks: Dict[str, str] = {}
+
+    checks["angel_credentials"] = (
+        "set"
+        if all(os.environ.get(k) for k in
+               ("ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PASSWORD", "ANGEL_TOTP_SECRET"))
+        else "missing"
+    )
+    checks["groq_api"]   = "set" if os.environ.get("GROQ_API_KEY") else "missing"
+    checks["broker"]     = "emergency_stopped" if auto_broker._emergency_stopped else "active"
+    checks["model"]      = "trained" if intraday_model.is_trained() else "untrained"
+    checks["scheduler"]  = "running" if market_scheduler.running else "stopped"
+
+    try:
+        redis_manager.client.ping()
+        checks["database"] = "ok"
+    except Exception:
+        checks["database"] = "error"
+
+    degraded = (
+        checks["angel_credentials"] == "missing"
+        or checks["broker"] == "emergency_stopped"
+        or checks["database"] == "error"
+    )
+    status = "degraded" if degraded else "healthy"
+
+    try:
+        broker_snapshot = auto_broker.get_portfolio_snapshot()
+    except Exception:
+        broker_snapshot = {}
+
+    return {
+        "status":          status,
+        "timestamp":       ts,
+        "checks":          checks,
+        "broker_snapshot": broker_snapshot,
+        "version":         "3.0.0-intraday",
+    }
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket_manager.connect(websocket)
