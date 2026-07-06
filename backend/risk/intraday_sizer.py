@@ -24,6 +24,7 @@ class IntradaySizer:
         stop_loss: float,
         available_capital: float,
         size_multiplier: float = 1.0,
+        expiry_multiplier: float = 1.0,
     ) -> dict:
         """
         Compute position size and TP/SL levels.
@@ -34,13 +35,17 @@ class IntradaySizer:
         stop_loss         : stop-loss price (₹)
         available_capital : cash available in the broker account (₹)
         size_multiplier   : regime/VIX multiplier from IntradayRegimeDetector
+        expiry_multiplier : F&O expiry risk multiplier from ExpiryCalendar
 
         Returns
         -------
         dict with viable=True and sizing details, or viable=False with reason
         """
         try:
-            return self._calculate(entry_price, stop_loss, available_capital, size_multiplier)
+            return self._calculate(
+                entry_price, stop_loss, available_capital,
+                size_multiplier, expiry_multiplier,
+            )
         except Exception as exc:
             logger.warning("[sizer] calculate() failed: %s", exc)
             return {"viable": False, "reason": f"Internal error: {exc}"}
@@ -51,13 +56,15 @@ class IntradaySizer:
         stop_loss: float,
         available_capital: float,
         size_multiplier: float,
+        expiry_multiplier: float = 1.0,
     ) -> dict:
         stop_distance = abs(entry_price - stop_loss)
         if stop_distance <= 0:
             return {"viable": False, "reason": "Invalid SL"}
 
+        final_multiplier = max(0.0, size_multiplier) * max(0.0, expiry_multiplier)
         base_risk     = available_capital * 0.01
-        adjusted_risk = base_risk * max(0.0, size_multiplier)
+        adjusted_risk = base_risk * final_multiplier
 
         shares = int(adjusted_risk / stop_distance)
 
@@ -75,13 +82,15 @@ class IntradaySizer:
         tp2        = entry_price + (atr_stop * 3.0)
 
         return {
-            "viable":          True,
-            "shares":          shares,
-            "position_value":  round(shares * entry_price, 2),
-            "risk_amount":     round(shares * stop_distance, 2),
-            "stop_loss":       round(stop_loss, 2),
-            "take_profit_1":   round(tp1, 2),
-            "take_profit_2":   round(tp2, 2),
+            "viable":             True,
+            "shares":             shares,
+            "position_value":     round(shares * entry_price, 2),
+            "risk_amount":        round(shares * stop_distance, 2),
+            "stop_loss":          round(stop_loss, 2),
+            "take_profit_1":      round(tp1, 2),
+            "take_profit_2":      round(tp2, 2),
+            "expiry_multiplier":  expiry_multiplier,
+            "final_multiplier":   round(final_multiplier, 4),
         }
 
 

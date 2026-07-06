@@ -51,6 +51,7 @@ from decisions.intraday_decision  import intraday_decision_engine, DECISION_CONF
 from risk.intraday_sizer          import IntradaySizer
 from broker.auto_paper_broker     import auto_broker
 from shadow.shadow_manager        import shadow_manager
+from expiry.expiry_calendar       import expiry_calendar
 
 try:
     import schedule
@@ -82,8 +83,12 @@ class MarketScheduler:
         self.running   = False
         self.paused    = False
         self.skip_today = False
-        self.day_min_score       = 65
-        self.day_size_multiplier = 1.0
+        self.day_min_score           = 65
+        self.day_size_multiplier     = 1.0
+        self.expiry_context          = None
+        self.day_max_trades          = 999
+        self.day_avoid_after         = "14:45"
+        self.day_expiry_risk_mult    = 1.0
 
         self.watchlist:            list  = []
         self.intelligence_cache:   dict  = {}
@@ -187,6 +192,23 @@ class MarketScheduler:
             vix = mood.get("vix", 15.0)
             morning_bias = mood.get("morning_bias", "NEUTRAL")
             self.apply_morning_bias(morning_bias)
+
+            # Get expiry context for today
+            self.expiry_context = expiry_calendar.get_expiry_context()
+            self.day_expiry_risk_mult = self.expiry_context["risk_multiplier"]
+            self.day_max_trades       = self.expiry_context["max_trades_today"]
+            self.day_avoid_after      = self.expiry_context["avoid_after"]
+
+            if self.expiry_context["is_expiry_day"]:
+                loss_mult = self.expiry_context["daily_loss_multiplier"]
+                auto_broker.max_daily_loss    *= loss_mult
+                auto_broker.emergency_stop_loss *= loss_mult
+                print(
+                    f"[expiry] {self.expiry_context['expiry_type']} "
+                    f"day: risk={self.day_expiry_risk_mult}x "
+                    f"max_trades={self.day_max_trades}"
+                )
+
             if vix > 25.0:
                 self.skip_today = True
                 logger.warning("[scheduler] VIX=%.1f > 25 — skipping trading today", vix)
@@ -296,6 +318,20 @@ class MarketScheduler:
         if self.skip_today:
             return
 
+        # Gate: expiry day trade count limit
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        trades_today = len([
+            t for t in auto_broker.trades
+            if t.get("opened_at", "").startswith(today_str)
+        ])
+        if trades_today >= self.day_max_trades:
+            return
+
+        # Gate: expiry day time cutoff
+        current_time_str = datetime.now(IST).strftime("%H:%M")
+        if current_time_str >= self.day_avoid_after:
+            return
+
         # Fetch candle history
         candles_5min = self.candle_builder.get_candles(ticker, "5min", 60)
         candles_1min = self.candle_builder.get_candles(ticker, "1min", 200)
@@ -365,7 +401,8 @@ class MarketScheduler:
             entry_price=current_price,
             stop_loss=stop_loss,
             available_capital=auto_broker.capital,
-            size_multiplier=regime.get("size_multiplier", 1.0),
+            size_multiplier=regime.get("size_multiplier", 1.0) * self.day_size_multiplier,
+            expiry_multiplier=self.day_expiry_risk_mult,
         )
         if not sizing.get("viable"):
             logger.info("[scheduler] %s sizing not viable: %s", ticker, sizing.get("reason"))
