@@ -196,9 +196,31 @@ class IntradayDecisionEngine:
         elif pivot_zone == "below_s1":
             pivot_bonus = 3.0
 
-        technical_score = max(0.0, min(100.0,
-            prob_up * 100.0 + adx_bonus + st_bonus + pivot_bonus
-        ))
+        base = prob_up * 100.0 + adx_bonus + st_bonus + pivot_bonus
+
+        # Volume Profile adjustments (Day 18)
+        price_vs_va = str(features.get("price_vs_va", "INSIDE_VA") or "INSIDE_VA")
+        vp_poc_val  = features.get("vp_poc")
+        vp_strength = str(features.get("volume_profile_strength", "NORMAL") or "NORMAL")
+
+        if features.get("at_prev_poc", False):
+            base += 9
+        if features.get("price_at_val", False):
+            base += 7
+        if features.get("price_at_poc", False):
+            base += 5
+        if features.get("price_at_vah", False):
+            base -= 6
+        if price_vs_va == "ABOVE_VAH":
+            base += 4
+        elif price_vs_va == "BELOW_VAL":
+            base -= 6
+        if vp_strength == "STRONG":
+            base += 3
+        elif vp_strength == "WEAK":
+            base -= 3
+
+        technical_score = max(0.0, min(100.0, base))
         news_score      = intel_score * 100.0      # 0–100
         mood_score_100  = mood_score * 100.0       # 0–100
 
@@ -211,12 +233,18 @@ class IntradayDecisionEngine:
         combined = round(combined, 1)
 
         score_breakdown = {
-            "technical":   round(technical_score, 2),
-            "news":        round(news_score, 2),
-            "market_mood": round(mood_score_100, 2),
-            "adx":         round(adx_val, 1),
-            "supertrend":  st_dir,
-            "pivot_zone":  pivot_zone,
+            "technical":       round(technical_score, 2),
+            "news":            round(news_score, 2),
+            "market_mood":     round(mood_score_100, 2),
+            "adx":             round(adx_val, 1),
+            "supertrend":      st_dir,
+            "pivot_zone":      pivot_zone,
+            "vp_zone":         price_vs_va,
+            "at_key_vp_level": (
+                features.get("price_at_poc", False) or
+                features.get("price_at_val", False) or
+                features.get("at_prev_poc",  False)
+            ),
         }
 
         # ── 6. Score gate ─────────────────────────────────────────────────
@@ -260,6 +288,13 @@ class IntradayDecisionEngine:
             "adx":                 round(adx_val, 1),
             "supertrend":          st_dir,
             "pivot_zone":          pivot_zone,
+            "vp_poc":              vp_poc_val,
+            "vp_zone":             price_vs_va,
+            "at_key_vp_level": (
+                features.get("price_at_poc", False) or
+                features.get("price_at_val", False) or
+                features.get("at_prev_poc",  False)
+            ),
         }
 
 

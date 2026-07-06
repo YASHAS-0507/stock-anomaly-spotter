@@ -47,7 +47,7 @@ from intelligence.sentiment_cache import SentimentCache
 from indicators.intraday_features import IntradayFeatures
 from regime.intraday_regime       import IntradayRegimeDetector
 from models.intraday_model        import intraday_model
-from decisions.intraday_decision  import intraday_decision_engine
+from decisions.intraday_decision  import intraday_decision_engine, DECISION_CONFIG
 from risk.intraday_sizer          import IntradaySizer
 from broker.auto_paper_broker     import auto_broker
 from shadow.shadow_manager        import shadow_manager
@@ -82,6 +82,8 @@ class MarketScheduler:
         self.running   = False
         self.paused    = False
         self.skip_today = False
+        self.day_min_score       = 65
+        self.day_size_multiplier = 1.0
 
         self.watchlist:            list  = []
         self.intelligence_cache:   dict  = {}
@@ -150,6 +152,29 @@ class MarketScheduler:
     # Scheduled jobs
     # ──────────────────────────────────────────────────────
 
+    def apply_morning_bias(self, morning_bias: str) -> None:
+        """Adjust day_min_score and day_size_multiplier based on macro morning bias."""
+        if morning_bias == "STRONG_BEAR":
+            self.day_min_score       = 75
+            self.day_size_multiplier = 0.5
+            logger.info("[scheduler] STRONG_BEAR day: min_score=75, size=0.5x")
+        elif morning_bias == "BEAR":
+            self.day_min_score       = 70
+            self.day_size_multiplier = 0.7
+            logger.info("[scheduler] BEAR day: min_score=70, size=0.7x")
+        elif morning_bias == "NEUTRAL":
+            self.day_min_score       = 65
+            self.day_size_multiplier = 1.0
+            logger.info("[scheduler] NEUTRAL day: normal settings")
+        elif morning_bias == "BULL":
+            self.day_min_score       = 62
+            self.day_size_multiplier = 1.0
+            logger.info("[scheduler] BULL day: min_score=62")
+        elif morning_bias == "STRONG_BULL":
+            self.day_min_score       = 60
+            self.day_size_multiplier = 1.0
+            logger.info("[scheduler] STRONG_BULL day: min_score=60")
+
     def pre_market_8am(self) -> None:
         """Run at 08:00 IST: VIX check, model load, initial mood."""
         logger.info("[scheduler] === pre_market_8am ===")
@@ -160,6 +185,8 @@ class MarketScheduler:
             mood = self.mood.get_mood()
             self.market_mood_cache = mood
             vix = mood.get("vix", 15.0)
+            morning_bias = mood.get("morning_bias", "NEUTRAL")
+            self.apply_morning_bias(morning_bias)
             if vix > 25.0:
                 self.skip_today = True
                 logger.warning("[scheduler] VIX=%.1f > 25 — skipping trading today", vix)
@@ -302,6 +329,7 @@ class MarketScheduler:
         open_count = len(auto_broker.positions)
         trade_id   = f"TRD-{ticker.split('.')[0]}-{datetime.now(IST).strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
+        DECISION_CONFIG["min_combined_score"] = self.day_min_score
         signal = intraday_decision_engine.generate_signal(
             ticker=ticker,
             features=features,
