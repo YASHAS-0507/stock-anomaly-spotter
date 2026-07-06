@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { usePrediction } from "../hooks/usePrediction";
 import TopBar               from "../components/TopBar";
 import TickerInput          from "../components/TickerInput";
@@ -11,6 +12,20 @@ import ExplainabilityCard   from "../components/ExplainabilityCard";
 import ExecutionQueueCard   from "../components/ExecutionQueueCard";
 import MarketDataDashboard  from "../components/MarketDataDashboard";
 import SystemHealthCard     from "../components/SystemHealthCard";
+import LiveTickerStrip      from "@/components/intraday/LiveTickerStrip";
+import ActivePositions      from "@/components/intraday/ActivePositions";
+import TodayStats           from "@/components/intraday/TodayStats";
+import AutoTradeLog         from "@/components/intraday/AutoTradeLog";
+import ScannerCard          from "@/components/intraday/ScannerCard";
+import RegimeMatrix         from "@/components/intraday/RegimeMatrix";
+import SchedulerControls    from "@/components/intraday/SchedulerControls";
+import {
+  fetchSchedulerStatus,
+  fetchLivePositions,
+  fetchTodayTrades,
+  fetchWatchlist,
+  postSchedulerControl,
+} from "../services/api";
 
 export default function Home() {
   const {
@@ -23,9 +38,49 @@ export default function Home() {
     runAnalysis,
   } = usePrediction();
 
+  const [schedulerStatus, setSchedulerStatus] = useState(null);
+  const [livePositions, setLivePositions]     = useState([]);
+  const [todayTrades, setTodayTrades]         = useState([]);
+  const [watchlist, setWatchlist]             = useState([]);
+  const [liveLoading, setLiveLoading]         = useState(false);
+
+  async function fetchLiveData() {
+    try {
+      setLiveLoading(true);
+      const [status, positions, trades, wl] = await Promise.all([
+        fetchSchedulerStatus(),
+        fetchLivePositions(),
+        fetchTodayTrades(),
+        fetchWatchlist(),
+      ]);
+      setSchedulerStatus(status);
+      setLivePositions(positions.open_positions || []);
+      setTodayTrades(trades || []);
+      setWatchlist(wl.watchlist || []);
+    } catch (e) {
+      console.error("Live data fetch failed:", e);
+    } finally {
+      setLiveLoading(false);
+    }
+  }
+
+  useEffect(() => { fetchLiveData(); }, []);
+
+  useEffect(() => {
+    const interval = setInterval(fetchLiveData, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="page">
       <TopBar analysis={analysis} latency={latency} />
+
+      {/* Live ticker strip — always visible at top */}
+      <LiveTickerStrip
+        prices={schedulerStatus?.broker?.open_positions || []}
+        watchlist={watchlist}
+        loading={liveLoading}
+      />
 
       <TickerInput
         ticker={ticker}         setTicker={setTicker}
@@ -96,6 +151,54 @@ export default function Home() {
 
         </div>
       )}
+
+      {/* ── Phase 3: Intraday Autonomous Trading Section ── */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 340px",
+        gap: 16,
+        marginTop: 24,
+        alignItems: "start",
+      }}>
+        {/* Left column */}
+        <div>
+          <SchedulerControls
+            status={schedulerStatus}
+            onAction={async (action) => {
+              await postSchedulerControl(action);
+              await fetchLiveData();
+            }}
+            loading={liveLoading}
+          />
+          <TodayStats
+            portfolio={schedulerStatus?.broker}
+            loading={liveLoading}
+          />
+          <AutoTradeLog
+            trades={todayTrades}
+            loading={liveLoading}
+          />
+        </div>
+
+        {/* Right column */}
+        <div>
+          <ActivePositions
+            positions={livePositions}
+            currentPrices={{}}
+            loading={liveLoading}
+          />
+          <ScannerCard
+            watchlist={watchlist}
+            intelligence={schedulerStatus?.intelligence || {}}
+            loading={liveLoading}
+          />
+          <RegimeMatrix
+            watchlist={watchlist}
+            regimes={{}}
+            loading={liveLoading}
+          />
+        </div>
+      </div>
     </div>
   );
 }

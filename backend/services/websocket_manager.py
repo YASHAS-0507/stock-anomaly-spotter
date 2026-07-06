@@ -26,11 +26,27 @@ def _get_market_status() -> dict:
     }
 
 
+def _get_scheduler_snapshot() -> dict:
+    """Return a lightweight scheduler status snapshot for WebSocket broadcast."""
+    try:
+        from scheduler.market_scheduler import market_scheduler
+        from broker.auto_paper_broker import auto_broker
+        return {
+            "running":          market_scheduler.running,
+            "watchlist_count":  len(market_scheduler.watchlist),
+            "open_positions":   len(auto_broker.positions),
+            "daily_pnl":        round(auto_broker.daily_pnl, 2),
+        }
+    except Exception:
+        return {"running": False, "watchlist_count": 0, "open_positions": 0, "daily_pnl": 0.0}
+
+
 class WebSocketManager:
     def __init__(self):
         self._connections: Set[WebSocket] = set()
         self._broadcast_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
+        self._scheduler_task: asyncio.Task | None = None
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -44,6 +60,8 @@ class WebSocketManager:
             self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         if self._heartbeat_task is None or self._heartbeat_task.done():
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        if self._scheduler_task is None or self._scheduler_task.done():
+            self._scheduler_task = asyncio.create_task(self._scheduler_broadcast_loop())
 
     def disconnect(self, websocket: WebSocket):
         self._connections.discard(websocket)
@@ -84,6 +102,26 @@ class WebSocketManager:
             for ws in list(self._connections):
                 try:
                     await ws.send_text(json.dumps({"type": "ping", "timestamp": int(time.time() * 1000)}))
+                except Exception:
+                    dead.add(ws)
+            for ws in dead:
+                self._connections.discard(ws)
+
+    async def _scheduler_broadcast_loop(self):
+        """Broadcast scheduler status to all connected clients every 10 seconds."""
+        while self._connections:
+            await asyncio.sleep(10)
+            if not self._connections:
+                break
+            payload = json.dumps({
+                "type":      "scheduler_status",
+                "timestamp": int(time.time() * 1000),
+                "data":      _get_scheduler_snapshot(),
+            })
+            dead = set()
+            for ws in list(self._connections):
+                try:
+                    await ws.send_text(payload)
                 except Exception:
                     dead.add(ws)
             for ws in dead:
