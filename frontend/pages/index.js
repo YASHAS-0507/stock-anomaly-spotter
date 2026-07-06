@@ -20,6 +20,7 @@ import ScannerCard          from "@/components/intraday/ScannerCard";
 import RegimeMatrix         from "@/components/intraday/RegimeMatrix";
 import SchedulerControls    from "@/components/intraday/SchedulerControls";
 import CandlestickChart     from "@/components/intraday/CandlestickChart";
+import AnalyticsDashboard   from "../components/analytics/AnalyticsDashboard";
 import {
   fetchSchedulerStatus,
   fetchLivePositions,
@@ -27,6 +28,7 @@ import {
   fetchWatchlist,
   postSchedulerControl,
   fetchCandles,
+  fetchAnalytics,
 } from "../services/api";
 
 export default function Home() {
@@ -48,6 +50,9 @@ export default function Home() {
   const [candleData, setCandleData]           = useState([]);
   const [candleInterval, setCandleInterval]   = useState("5min");
   const [candleLoading, setCandleLoading]     = useState(false);
+  const [analyticsData, setAnalyticsData]     = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [activeTab, setActiveTab]             = useState("trading"); // "trading" | "analytics"
 
   async function fetchLiveData() {
     try {
@@ -88,6 +93,24 @@ export default function Home() {
   useEffect(() => {
     const interval = setInterval(fetchLiveData, 30000);
     return () => clearInterval(interval);
+  }, []);
+
+  async function loadAnalytics() {
+    try {
+      setAnalyticsLoading(true);
+      const data = await fetchAnalytics();
+      setAnalyticsData(data);
+    } catch (e) {
+      console.error("Analytics fetch failed:", e);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAnalytics();
+    const id = setInterval(loadAnalytics, 300000); // refresh every 5 minutes
+    return () => clearInterval(id);
   }, []);
 
   // Refresh candles when analysis ticker changes or scheduler is running
@@ -194,12 +217,40 @@ export default function Home() {
         </div>
       )}
 
+      {/* ── Tab selector ── */}
+      <div style={{ display: "flex", gap: 8, marginTop: 24, marginBottom: 16 }}>
+        {[
+          { key: "trading",   label: "Trading" },
+          { key: "analytics", label: "Analytics" },
+        ].map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setActiveTab(key)}
+            style={{
+              fontFamily: "var(--mono)", fontSize: 11, fontWeight: 600,
+              padding: "7px 18px", borderRadius: 7, cursor: "pointer",
+              border: "1px solid",
+              borderColor: activeTab === key ? "var(--cyan)" : "var(--border)",
+              background: activeTab === key ? "rgba(0,208,255,0.1)" : "var(--surface)",
+              color: activeTab === key ? "var(--cyan)" : "var(--text-3)",
+              letterSpacing: "0.06em",
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Analytics tab ── */}
+      {activeTab === "analytics" && (
+        <AnalyticsDashboard data={analyticsData} loading={analyticsLoading} />
+      )}
+
       {/* ── Phase 3: Intraday Autonomous Trading Section ── */}
-      <div style={{
+      {activeTab === "trading" && <div style={{
         display: "grid",
         gridTemplateColumns: "1fr 340px",
         gap: 16,
-        marginTop: 24,
         alignItems: "start",
       }}>
         {/* Left column */}
@@ -240,7 +291,7 @@ export default function Home() {
             loading={liveLoading}
           />
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

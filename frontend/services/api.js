@@ -75,6 +75,12 @@ export async function postSchedulerControl(action) {
   return res.json();
 }
 
+export async function fetchAnalytics() {
+  const res = await fetch(`${API_BASE}/api/analytics/summary`);
+  if (!res.ok) throw new Error("Analytics fetch failed");
+  return res.json();
+}
+
 export async function fetchCandles(ticker, interval = "5min", limit = 100) {
   const res = await fetch(
     `${API_BASE}/api/candles/${encodeURIComponent(ticker)}?interval=${interval}&limit=${limit}`
