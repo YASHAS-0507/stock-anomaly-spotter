@@ -65,6 +65,21 @@ _DEFAULTS: dict = {
     "minutes_since_open": 0,
     "time_of_day_score":  0.5,
     "trading_window":     "closed",
+    # Supertrend (Day 17)
+    "supertrend_direction": "neutral",
+    "supertrend_value":     0.0,
+    # ADX (Day 17)
+    "adx":                  20.0,
+    "adx_plus_di":          20.0,
+    "adx_minus_di":         20.0,
+    "adx_trending":         False,
+    # Pivot Points (Day 17)
+    "pivot":                0.0,
+    "pivot_r1":             0.0,
+    "pivot_r2":             0.0,
+    "pivot_s1":             0.0,
+    "pivot_s2":             0.0,
+    "pivot_zone":           "between_s1_r1",
 }
 
 
@@ -202,6 +217,27 @@ class IntradayFeatures:
         daily_ret, ret_zscore = _return_stats(closes_5, price)
         result["daily_return"]  = round(daily_ret, 4)
         result["return_zscore"] = round(ret_zscore, 4)
+
+        # ── Supertrend (Day 17) ───────────────────────────────────────────
+        st_dir, st_val = _supertrend(highs_5, lows_5, closes_5)
+        result["supertrend_direction"] = st_dir
+        result["supertrend_value"]     = round(st_val, 2)
+
+        # ── ADX (Day 17) ──────────────────────────────────────────────────
+        adx_val, plus_di, minus_di = _adx(highs_5, lows_5, closes_5)
+        result["adx"]          = round(adx_val, 2)
+        result["adx_plus_di"]  = round(plus_di, 2)
+        result["adx_minus_di"] = round(minus_di, 2)
+        result["adx_trending"] = adx_val >= 25.0
+
+        # ── Pivot Points (Day 17) ─────────────────────────────────────────
+        pivot, r1, r2, s1, s2 = _pivot_points(highs_5, lows_5, closes_5)
+        result["pivot"]      = round(pivot, 2)
+        result["pivot_r1"]   = round(r1, 2)
+        result["pivot_r2"]   = round(r2, 2)
+        result["pivot_s1"]   = round(s1, 2)
+        result["pivot_s2"]   = round(s2, 2)
+        result["pivot_zone"] = _pivot_zone(price, r1, r2, s1, s2)
 
         # ── Time context ──────────────────────────────────────────────────
         now_ist = datetime.now(IST)
@@ -486,6 +522,144 @@ def _trading_window(mins_since_open: int) -> str:
     if mins_since_open <= _WINDOW2_END:
         return "window2"
     return "closed"
+
+
+def _supertrend(
+    highs: list, lows: list, closes: list,
+    period: int = 10, multiplier: float = 3.0,
+) -> tuple:
+    """Returns (direction_str, supertrend_value). direction: 'bullish'|'bearish'|'neutral'."""
+    n = min(len(highs), len(lows), len(closes))
+    if n < period + 2:
+        return "neutral", (closes[-1] if closes else 0.0)
+
+    # True Range
+    tr = [highs[0] - lows[0]]
+    for i in range(1, n):
+        tr.append(max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        ))
+
+    # Wilder's ATR (indexed same as candles; valid from index period-1)
+    atr = [0.0] * n
+    atr[period - 1] = sum(tr[:period]) / period
+    for i in range(period, n):
+        atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+
+    final_ub  = [0.0] * n
+    final_lb  = [0.0] * n
+    direction = ["neutral"] * n
+    st_val    = [0.0] * n
+
+    for i in range(period - 1, n):
+        hl2      = (highs[i] + lows[i]) / 2.0
+        basic_ub = hl2 + multiplier * atr[i]
+        basic_lb = hl2 - multiplier * atr[i]
+
+        if i == period - 1:
+            final_ub[i] = basic_ub
+            final_lb[i] = basic_lb
+        else:
+            final_ub[i] = (basic_ub
+                           if basic_ub < final_ub[i - 1] or closes[i - 1] > final_ub[i - 1]
+                           else final_ub[i - 1])
+            final_lb[i] = (basic_lb
+                           if basic_lb > final_lb[i - 1] or closes[i - 1] < final_lb[i - 1]
+                           else final_lb[i - 1])
+
+        if i == period - 1:
+            direction[i] = "bullish" if closes[i] > final_ub[i] else "bearish"
+        elif direction[i - 1] == "bearish":
+            direction[i] = "bullish" if closes[i] > final_ub[i] else "bearish"
+        else:
+            direction[i] = "bearish" if closes[i] < final_lb[i] else "bullish"
+
+        st_val[i] = final_lb[i] if direction[i] == "bullish" else final_ub[i]
+
+    return direction[n - 1], st_val[n - 1]
+
+
+def _adx(highs: list, lows: list, closes: list, period: int = 14) -> tuple:
+    """Returns (adx, plus_di, minus_di) using Wilder's smoothing."""
+    n = min(len(highs), len(lows), len(closes))
+    if n < period + 2:
+        return 20.0, 20.0, 20.0
+
+    tr_list  = []
+    pdm_list = []
+    ndm_list = []
+
+    for i in range(1, n):
+        tr_list.append(max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i]  - closes[i - 1]),
+        ))
+        up   = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        pdm_list.append(up   if up   > down and up   > 0 else 0.0)
+        ndm_list.append(down if down > up   and down > 0 else 0.0)
+
+    smooth_tr  = sum(tr_list[:period])
+    smooth_pdm = sum(pdm_list[:period])
+    smooth_ndm = sum(ndm_list[:period])
+
+    eps = 1e-9
+    dx_list = []
+
+    def _calc_di(dm): return 100.0 * dm / (smooth_tr + eps)
+
+    plus_di  = _calc_di(smooth_pdm)
+    minus_di = _calc_di(smooth_ndm)
+    dx_list.append(100.0 * abs(plus_di - minus_di) / (plus_di + minus_di + eps))
+
+    for i in range(period, len(tr_list)):
+        smooth_tr  = smooth_tr  - smooth_tr  / period + tr_list[i]
+        smooth_pdm = smooth_pdm - smooth_pdm / period + pdm_list[i]
+        smooth_ndm = smooth_ndm - smooth_ndm / period + ndm_list[i]
+        plus_di  = 100.0 * smooth_pdm / (smooth_tr + eps)
+        minus_di = 100.0 * smooth_ndm / (smooth_tr + eps)
+        dx_list.append(100.0 * abs(plus_di - minus_di) / (plus_di + minus_di + eps))
+
+    # ADX = Wilder smooth of DX series
+    if len(dx_list) < period:
+        adx_val = sum(dx_list) / len(dx_list) if dx_list else 20.0
+    else:
+        adx_val = sum(dx_list[:period]) / period
+        for dx in dx_list[period:]:
+            adx_val = (adx_val * (period - 1) + dx) / period
+
+    return round(adx_val, 2), round(plus_di, 2), round(minus_di, 2)
+
+
+def _pivot_points(highs: list, lows: list, closes: list) -> tuple:
+    """Classic pivot points (P, R1, R2, S1, S2) from session high/low/last close."""
+    if not highs or not lows or not closes:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+    h = max(highs)
+    l = min(lows)
+    c = closes[-1]
+    p  = (h + l + c) / 3.0
+    r1 = 2 * p - l
+    r2 = p + (h - l)
+    s1 = 2 * p - h
+    s2 = p - (h - l)
+    return p, r1, r2, s1, s2
+
+
+def _pivot_zone(price: float, r1: float, r2: float, s1: float, s2: float) -> str:
+    """Classify current price relative to pivot levels."""
+    if r2 > 0 and price >= r2:
+        return "above_r2"
+    if r1 > 0 and price >= r1:
+        return "above_r1"
+    if s2 > 0 and price <= s2:
+        return "below_s2"
+    if s1 > 0 and price <= s1:
+        return "below_s1"
+    return "between_s1_r1"
 
 
 def _time_score(mins_since_open: int) -> float:
