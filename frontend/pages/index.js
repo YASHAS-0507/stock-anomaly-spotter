@@ -19,12 +19,14 @@ import AutoTradeLog         from "@/components/intraday/AutoTradeLog";
 import ScannerCard          from "@/components/intraday/ScannerCard";
 import RegimeMatrix         from "@/components/intraday/RegimeMatrix";
 import SchedulerControls    from "@/components/intraday/SchedulerControls";
+import CandlestickChart     from "@/components/intraday/CandlestickChart";
 import {
   fetchSchedulerStatus,
   fetchLivePositions,
   fetchTodayTrades,
   fetchWatchlist,
   postSchedulerControl,
+  fetchCandles,
 } from "../services/api";
 
 export default function Home() {
@@ -43,6 +45,9 @@ export default function Home() {
   const [todayTrades, setTodayTrades]         = useState([]);
   const [watchlist, setWatchlist]             = useState([]);
   const [liveLoading, setLiveLoading]         = useState(false);
+  const [candleData, setCandleData]           = useState([]);
+  const [candleInterval, setCandleInterval]   = useState("5min");
+  const [candleLoading, setCandleLoading]     = useState(false);
 
   async function fetchLiveData() {
     try {
@@ -64,12 +69,35 @@ export default function Home() {
     }
   }
 
+  async function fetchCandleData(t, iv) {
+    const candleTicker = t || ticker;
+    if (!candleTicker) return;
+    try {
+      setCandleLoading(true);
+      const data = await fetchCandles(candleTicker, iv || candleInterval);
+      setCandleData(data.candles || []);
+    } catch (e) {
+      console.error("Candle fetch failed:", e);
+    } finally {
+      setCandleLoading(false);
+    }
+  }
+
   useEffect(() => { fetchLiveData(); }, []);
 
   useEffect(() => {
     const interval = setInterval(fetchLiveData, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  // Refresh candles when analysis ticker changes or scheduler is running
+  useEffect(() => {
+    if (ticker && schedulerStatus?.scheduler_running) {
+      fetchCandleData(ticker, candleInterval);
+      const id = setInterval(() => fetchCandleData(ticker, candleInterval), 60000);
+      return () => clearInterval(id);
+    }
+  }, [ticker, candleInterval, schedulerStatus?.scheduler_running]);
 
   return (
     <div className="page">
@@ -103,7 +131,21 @@ export default function Home() {
             marginBottom: 16,
             alignItems: "start",
           }}>
-            <LivePriceChart analysis={analysis} />
+            {schedulerStatus?.scheduler_running ? (
+              <CandlestickChart
+                candles={candleData}
+                ticker={ticker}
+                interval={candleInterval}
+                anomalies={analysis?.anomaly_dates || []}
+                loading={candleLoading}
+                onIntervalChange={(iv) => {
+                  setCandleInterval(iv);
+                  fetchCandleData(ticker, iv);
+                }}
+              />
+            ) : (
+              <LivePriceChart analysis={analysis} />
+            )}
             <PredictionEngine prediction={prediction} decision={decision} />
           </div>
 

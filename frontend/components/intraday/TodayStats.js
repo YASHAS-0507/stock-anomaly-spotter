@@ -1,3 +1,8 @@
+import { useMemo } from "react";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+} from "recharts";
+
 function fmt(val, decimals = 2) {
   if (val == null) return "—";
   return Number(val).toFixed(decimals);
@@ -54,11 +59,19 @@ export default function TodayStats({ portfolio, loading = false }) {
   const winRate    = portfolio.win_rate ?? 0;
   const totalTrades = portfolio.total_trades ?? 0;
 
-  const trades = Array.isArray(portfolio.open_positions) ? [] : [];
   const completedTrades = portfolio._trades ?? [];
   const sorted  = [...completedTrades].sort((a, b) => (b.pnl ?? 0) - (a.pnl ?? 0));
   const bestPnl  = sorted[0]?.pnl;
   const worstPnl = sorted[sorted.length - 1]?.pnl;
+
+  const equityCurve = useMemo(() => {
+    if (!completedTrades.length) return [];
+    let cum = 0;
+    return completedTrades.map((t, i) => {
+      cum += (t.pnl || 0);
+      return { n: i + 1, pnl: parseFloat(cum.toFixed(2)) };
+    });
+  }, [completedTrades]);
 
   return (
     <div style={{ marginBottom: 16 }}>
@@ -114,6 +127,42 @@ export default function TodayStats({ portfolio, loading = false }) {
           accentClass="down"
         />
       </div>
+
+      {/* Mini equity curve */}
+      {equityCurve.length > 1 && (
+        <div style={{
+          marginTop: 12, background: "var(--surface)",
+          border: "1px solid var(--border)", borderRadius: 8, padding: "8px 4px 4px",
+        }}>
+          <div style={{
+            fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)",
+            marginLeft: 8, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em",
+          }}>
+            Equity Curve
+          </div>
+          <ResponsiveContainer width="100%" height={60}>
+            <LineChart data={equityCurve} margin={{ top: 2, right: 8, bottom: 2, left: 8 }}>
+              <XAxis dataKey="n" hide />
+              <YAxis hide domain={["auto", "auto"]} />
+              <Tooltip
+                formatter={(v) => [`${v >= 0 ? "+" : ""}₹${fmt(v)}`, "Cum. P&L"]}
+                contentStyle={{
+                  background: "var(--elevated)", border: "1px solid var(--border)",
+                  borderRadius: 6, fontFamily: "var(--mono)", fontSize: 10,
+                }}
+              />
+              <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="3 2" />
+              <Line
+                dataKey="pnl"
+                stroke={dailyPnl >= 0 ? "var(--green)" : "var(--red)"}
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }

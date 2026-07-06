@@ -44,6 +44,7 @@ from services.market_data import market_data_manager, Interval
 from services.redis_manager import redis_manager
 from services.market_status import market_status_service
 from routers.market import router as market_router
+from routers.candles import router as candles_router
 
 # Phase 2.2: AI Decision Engine
 from decision_engine import generate_decision
@@ -154,6 +155,8 @@ app.add_middleware(
 
 # Include Market Data router (Phase 1)
 app.include_router(market_router, tags=["market"])
+# Phase 3: Intraday candle data router
+app.include_router(candles_router, tags=["candles"])
 
 # =====================================================================
 # THE IRONCLAD SAFETY NET: GLOBAL EXCEPTION HANDLERS

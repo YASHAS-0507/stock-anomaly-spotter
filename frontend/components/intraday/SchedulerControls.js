@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { postSchedulerControl } from "../../services/api";
 
 const STATUS_STYLE = {
@@ -17,10 +17,35 @@ function deriveStatus(status) {
   return "STOPPED";
 }
 
+function getMarketCountdown() {
+  // Returns "Market opens in Xh Ym" if before 9:15am IST today (weekday), else null
+  const nowUTC  = Date.now();
+  const istMs   = nowUTC + 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(istMs);
+  const day     = istDate.getUTCDay(); // 0=Sun, 1=Mon … 6=Sat
+  if (day === 0 || day === 6) return null; // weekend
+
+  const openMs = new Date(istMs);
+  openMs.setUTCHours(3, 45, 0, 0); // 9:15 IST = 03:45 UTC
+  const diffMs = openMs - nowUTC;
+  if (diffMs <= 0) return null;
+
+  const totalMins = Math.floor(diffMs / 60000);
+  const hours = Math.floor(totalMins / 60);
+  const mins  = totalMins % 60;
+  return hours > 0 ? `Market opens in ${hours}h ${mins}m` : `Market opens in ${mins}m`;
+}
+
 export default function SchedulerControls({ status, onAction, loading = false }) {
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy]             = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
-  const [lastMsg, setLastMsg] = useState(null);
+  const [lastMsg, setLastMsg]       = useState(null);
+  const [countdown, setCountdown]   = useState(() => getMarketCountdown());
+
+  useEffect(() => {
+    const id = setInterval(() => setCountdown(getMarketCountdown()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const derived = deriveStatus(status);
   const style   = STATUS_STYLE[derived] || STATUS_STYLE.STOPPED;
@@ -74,6 +99,18 @@ export default function SchedulerControls({ status, onAction, loading = false })
           </span>
         </div>
       </div>
+
+      {/* Market open countdown — only before 9:15am on weekdays when not running */}
+      {countdown && !isRunning && (
+        <div style={{
+          fontFamily: "var(--mono)", fontSize: 11, color: "var(--cyan)",
+          marginBottom: 12, padding: "7px 12px",
+          background: "rgba(0,208,255,0.07)", border: "1px solid rgba(0,208,255,0.2)",
+          borderRadius: 6,
+        }}>
+          ⏱ {countdown}
+        </div>
+      )}
 
       {/* Status snapshot */}
       {status && (
