@@ -34,7 +34,7 @@ _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 
-from data_pipeline import get_price_data
+from feeds.data_provider import data_provider
 from feeds.ticker_registry import NIFTY_50_TOKENS, get_sector
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class MarketScanner:
 
         def _fetch_one(ticker: str):
             try:
-                df, _ = get_price_data(ticker, period=DATA_PERIOD)
+                df, _ = data_provider.get_daily_ohlcv(ticker, period=DATA_PERIOD)
                 return ticker, df if df is not None and not df.empty else None
             except Exception as exc:
                 logger.debug("[scanner] Fetch failed for %s: %s", ticker, exc)

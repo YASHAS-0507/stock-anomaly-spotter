@@ -133,6 +133,111 @@ class IntradayModel:
             logger.warning("[model] predict() failed: %s", exc)
             return _neutral_result()
 
+    def get_training_data(
+        self,
+        tickers: list,
+        days_back: int = 60,
+    ) -> list:
+        """
+        Fetches 5-min candles from data_provider for multiple tickers
+        and builds a training dataset.
+
+        Each sample dict has all FEATURE_COLUMNS plus current_price
+        and future_price (price 15 min = 3 bars ahead).
+
+        Falls back to synthetic data if Angel One unavailable.
+        """
+        try:
+            from feeds.data_provider import data_provider
+            from indicators.intraday_features import IntradayFeatures
+            fc = IntradayFeatures()
+            all_samples: list = []
+
+            for ticker in tickers:
+                try:
+                    candles, source = data_provider.get_intraday_candles(
+                        ticker, interval="FIVE_MINUTE", days_back=days_back
+                    )
+                    if len(candles) < 45:
+                        logger.debug(
+                            "[model] Skipping %s — only %d candles from %s",
+                            ticker, len(candles), source,
+                        )
+                        continue
+
+                    horizon = 3   # 15 min ahead
+                    window  = 40  # min candles for stable features
+
+                    for i in range(window, len(candles) - horizon):
+                        try:
+                            cur_price = float(candles[i]["close"])
+                            fut_price = float(candles[i + horizon]["close"])
+                            feats = fc.compute(candles[:i], [], cur_price)
+                            feats["current_price"] = cur_price
+                            feats["future_price"]  = fut_price
+                            all_samples.append(feats)
+                        except Exception:
+                            continue
+
+                except Exception as exc:
+                    logger.debug("[model] Training data fetch failed for %s: %s", ticker, exc)
+
+            if all_samples:
+                logger.info(
+                    "[model] Built %d training samples from %d tickers via data_provider",
+                    len(all_samples), len(tickers),
+                )
+                return all_samples
+
+        except Exception as exc:
+            logger.warning("[model] get_training_data() failed: %s — using synthetic", exc)
+
+        return self._synthetic_training_data(tickers)
+
+    def _synthetic_training_data(self, tickers: list) -> list:
+        """Generate deterministic synthetic training data as fallback."""
+        import random
+        try:
+            from indicators.intraday_features import IntradayFeatures
+            fc = IntradayFeatures()
+        except Exception:
+            return []
+
+        all_samples: list = []
+        for ticker in tickers[:5]:
+            seed = sum(ord(c) for c in ticker)
+            rng  = random.Random(seed)
+            base = 100.0 + rng.uniform(0, 900)
+
+            candles = []
+            price = base
+            for i in range(200):
+                o = price
+                c = o * (1 + rng.gauss(0, 0.002))
+                h = max(o, c) * (1 + abs(rng.gauss(0, 0.001)))
+                l = min(o, c) * (1 - abs(rng.gauss(0, 0.001)))
+                candles.append({
+                    "timestamp": float(1700000000 + i * 300),
+                    "open":  round(o, 2), "high": round(h, 2),
+                    "low":   round(l, 2), "close": round(c, 2),
+                    "volume": rng.randint(10000, 1000000),
+                })
+                price = c
+
+            horizon, window = 3, 40
+            for i in range(window, len(candles) - horizon):
+                try:
+                    cur_price = float(candles[i]["close"])
+                    fut_price = float(candles[i + horizon]["close"])
+                    feats = fc.compute(candles[:i], [], cur_price)
+                    feats["current_price"] = cur_price
+                    feats["future_price"]  = fut_price
+                    all_samples.append(feats)
+                except Exception:
+                    continue
+
+        return all_samples
+
     def load(self) -> bool:
         """
         Load model from disk.
