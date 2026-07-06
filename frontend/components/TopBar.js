@@ -17,7 +17,8 @@ export default function TopBar({ analysis, latency: propLatency }) {
   const displayLatency = ws.latency ?? propLatency;
 
   const feedStatus = ws.connected ? "LIVE" : "DISCONNECTED";
-  const feedColor = ws.connected ? "var(--green)" : "var(--red)";
+  const feedColor  = ws.connected ? "var(--green)" : "var(--red)";
+  const schedulerRunning = ws.wsSchedulerStatus?.running === true;
 
   const latencyColor = !displayLatency
     ? "var(--text-3)"
@@ -27,6 +28,12 @@ export default function TopBar({ analysis, latency: propLatency }) {
 
   return (
     <div className="topbar">
+      <style>{`
+        @keyframes scheduler-pulse {
+          0%, 100% { opacity: 1; box-shadow: 0 0 6px #00c48c; }
+          50%       { opacity: 0.4; box-shadow: 0 0 2px #00c48c; }
+        }
+      `}</style>
       <div className="topbar-brand">
         <div className="brand-dot" />
         <div>
@@ -36,6 +43,16 @@ export default function TopBar({ analysis, latency: propLatency }) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 20, fontFamily: "var(--mono)", fontSize: 12 }}>
+        {schedulerRunning && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{
+              width: 6, height: 6, borderRadius: "50%",
+              background: "#00c48c",
+              animation: "scheduler-pulse 1.2s ease-in-out infinite",
+            }} />
+            <span style={{ color: "#00c48c" }}>AUTO</span>
+          </div>
+        )}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <div style={{
             width: 6, height: 6, borderRadius: "50%",

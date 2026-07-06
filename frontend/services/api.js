@@ -74,3 +74,11 @@ export async function postSchedulerControl(action) {
   if (!res.ok) throw new Error(`${action} failed`);
   return res.json();
 }
+
+export async function fetchCandles(ticker, interval = "5min", limit = 100) {
+  const res = await fetch(
+    `${API_BASE}/api/candles/${encodeURIComponent(ticker)}?interval=${interval}&limit=${limit}`
+  );
+  if (!res.ok) throw new Error("Candles fetch failed");
+  return res.json();
+}
