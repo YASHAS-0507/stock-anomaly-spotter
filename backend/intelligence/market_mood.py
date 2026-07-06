@@ -1,10 +1,10 @@
 """
 market_mood.py
 --------------
-Fetches India VIX and derives a market mood (bias, regime, trading parameters).
+Fetches India VIX + macro data and derives a market mood dict.
 
-Data source: yfinance ticker "^INDIAVIX" — with synthetic fallback when
-network is unavailable (consistent with data_pipeline.py pattern).
+Primary source: feeds.data_provider.get_macro_data() (15-min cached)
+Fallback: direct yfinance VIX fetch (legacy path)
 
 VIX regimes and trading multipliers:
   < 13   → LOW      — compressed volatility, size_multiplier = 1.2
@@ -24,73 +24,76 @@ _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 
-try:
-    import yfinance as yf
-    _YF_OK = True
-except ImportError:
-    _YF_OK = False
-    yf = None  # type: ignore
-
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Fallback VIX used when the network is unavailable
 _FALLBACK_VIX = 15.0
-
-VIX_TICKER = "^INDIAVIX"
 
 
 class MarketMood:
-    """Derives market mood from India VIX."""
+    """Derives market mood from India VIX + macro data via DataProvider."""
 
     def get_mood(self) -> dict:
         """
-        Fetch India VIX and return a structured mood dict.
+        Fetch macro data and return a structured mood dict.
 
-        Always returns a valid dict — uses a fallback VIX of 15.0 (NORMAL)
-        when the network or yfinance is unavailable.
+        Always returns a valid dict — falls back to VIX=15 (NORMAL) when
+        data sources are unavailable.
 
         Returns
         -------
         dict with keys:
             vix, vix_regime, market_bias, trading_recommended,
-            size_multiplier, reason, fetched_at, data_source
+            size_multiplier, reason, fetched_at, data_source,
+            macro_score, global_sentiment, usdinr, usdinr_change_pct,
+            crude_oil, crude_change_pct, sp500_change_pct, nikkei_change_pct,
+            gift_nifty_gap_pts
         """
-        vix, source = self._fetch_vix()
-        return self._build_mood(vix, source)
+        macro = self._fetch_macro()
+        vix    = macro.get("india_vix", _FALLBACK_VIX)
+        source = macro.get("source", "fallback")
+        return self._build_mood(vix, source, macro)
 
     # ──────────────────────────────────────────────────────
     # Internal helpers
     # ──────────────────────────────────────────────────────
 
-    def _fetch_vix(self) -> tuple[float, str]:
-        """Return (vix_value, source_label). Falls back to default on any error."""
-        if not _YF_OK:
-            return _FALLBACK_VIX, "fallback_no_yfinance"
-
+    def _fetch_macro(self) -> dict:
+        """Use DataProvider; fall back to direct VIX fetch on error."""
         try:
-            df = yf.download(
-                VIX_TICKER,
-                period="2d",
-                progress=False,
-                auto_adjust=True,
-            )
-            if df is not None and not df.empty:
-                # Flatten MultiIndex if present
-                import pandas as pd
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                col = "Close" if "Close" in df.columns else df.columns[0]
-                vix = float(df[col].dropna().iloc[-1])
-                if vix > 0:
-                    return round(vix, 2), "yfinance_live"
+            from feeds.data_provider import data_provider
+            return data_provider.get_macro_data()
         except Exception as exc:
-            logger.debug("[mood] VIX fetch failed: %s", exc)
+            logger.warning("[mood] DataProvider unavailable: %s — using legacy VIX fetch", exc)
+            vix, source = self._legacy_fetch_vix()
+            return {
+                "india_vix":          vix,
+                "usdinr":             83.0,
+                "usdinr_change_pct":   0.0,
+                "crude_oil":          75.0,
+                "crude_change_pct":    0.0,
+                "sp500_change_pct":    0.0,
+                "nikkei_change_pct":   0.0,
+                "global_sentiment":   "NEUTRAL",
+                "macro_score":         50.0,
+                "source":              source,
+            }
 
+    @staticmethod
+    def _legacy_fetch_vix() -> tuple:
+        """Legacy VIX fetch — delegates to data_provider to avoid direct yfinance."""
+        try:
+            from feeds.data_provider import data_provider
+            macro = data_provider.get_macro_data()
+            vix = macro.get("india_vix", _FALLBACK_VIX)
+            src = macro.get("source", "fallback")
+            return vix, src
+        except Exception as exc:
+            logger.debug("[mood] Legacy VIX fallback failed: %s", exc)
         return _FALLBACK_VIX, "fallback_network_unavailable"
 
     @staticmethod
-    def _build_mood(vix: float, source: str) -> dict:
-        now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+    def _build_mood(vix: float, source: str, macro: dict) -> dict:
+        now_ist     = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
         is_fallback = source.startswith("fallback")
 
         if vix < 13.0:
@@ -133,6 +136,9 @@ class MarketMood:
         if is_fallback:
             reason += " [VIX data unavailable — using default NORMAL baseline]"
 
+        # Gift Nifty gap — not reliably available via free API; set to None
+        gift_nifty_gap_pts = None
+
         return {
             "vix":                 vix,
             "vix_regime":          regime,
@@ -142,4 +148,14 @@ class MarketMood:
             "reason":              reason,
             "fetched_at":          now_ist,
             "data_source":         source,
+            # New macro fields
+            "macro_score":         macro.get("macro_score",         50.0),
+            "global_sentiment":    macro.get("global_sentiment",    "NEUTRAL"),
+            "usdinr":              macro.get("usdinr",              83.0),
+            "usdinr_change_pct":   macro.get("usdinr_change_pct",   0.0),
+            "crude_oil":           macro.get("crude_oil",           75.0),
+            "crude_change_pct":    macro.get("crude_change_pct",    0.0),
+            "sp500_change_pct":    macro.get("sp500_change_pct",    0.0),
+            "nikkei_change_pct":   macro.get("nikkei_change_pct",   0.0),
+            "gift_nifty_gap_pts":  gift_nifty_gap_pts,
         }

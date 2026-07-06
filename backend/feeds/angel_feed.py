@@ -326,6 +326,122 @@ class AngelOneFeed:
                 f"Run: pip install {' '.join(missing)}"
             )
 
+    # ─────────────────────────────────────────────────────
+    # Historical data API
+    # ─────────────────────────────────────────────────────
+
+    def get_historical_candles(
+        self,
+        symbol_token: str,
+        interval: str,
+        from_date: str,
+        to_date: str,
+        exchange: str = "NSE",
+    ) -> list:
+        """
+        Fetches historical OHLCV candles from Angel One.
+
+        interval options: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE,
+                          THIRTY_MINUTE, ONE_HOUR, ONE_DAY
+        from_date/to_date format: "YYYY-MM-DD HH:MM"
+
+        Returns list of dicts with keys:
+          timestamp, open, high, low, close, volume
+        Returns empty list on any error.
+        """
+        try:
+            if not self.auth_token:
+                ok = self.authenticate()
+                if not ok:
+                    print("[angel_feed] get_historical_candles: auth failed")
+                    return []
+
+            params = {
+                "exchange":    exchange,
+                "symboltoken": symbol_token,
+                "interval":    interval,
+                "fromdate":    from_date,
+                "todate":      to_date,
+            }
+            response = self._api.getCandleData(params)
+
+            if not response or not response.get("status"):
+                print(f"[angel_feed] getCandleData error: {response}")
+                return []
+
+            rows = response.get("data") or []
+            candles = []
+            for row in rows:
+                try:
+                    # Each row: [timestamp, open, high, low, close, volume]
+                    candles.append({
+                        "timestamp": str(row[0]),
+                        "open":      round(float(row[1]), 4),
+                        "high":      round(float(row[2]), 4),
+                        "low":       round(float(row[3]), 4),
+                        "close":     round(float(row[4]), 4),
+                        "volume":    int(row[5]) if len(row) > 5 else 0,
+                    })
+                except Exception as row_exc:
+                    print(f"[angel_feed] Row parse error: {row_exc}  row={row}")
+            return candles
+
+        except Exception as exc:
+            print(f"[angel_feed] get_historical_candles error: {exc}")
+            return []
+
+    def get_warmup_candles(
+        self,
+        symbol_token: str,
+        days_back: int = 30,
+    ) -> dict:
+        """
+        Gets last N days of 5min and 1min candles for model warmup.
+        Returns {"1min": list, "5min": list}.
+        Handles IST timezone correctly.
+        """
+        from datetime import datetime, timezone, timedelta
+        IST = timezone(timedelta(hours=5, minutes=30))
+        now   = datetime.now(IST)
+        start = now - timedelta(days=days_back)
+        from_date = start.strftime("%Y-%m-%d %H:%M")
+        to_date   = now.strftime("%Y-%m-%d %H:%M")
+
+        candles_5min = self.get_historical_candles(
+            symbol_token, "FIVE_MINUTE", from_date, to_date
+        )
+        candles_1min = self.get_historical_candles(
+            symbol_token, "ONE_MINUTE", from_date, to_date
+        )
+        return {"1min": candles_1min, "5min": candles_5min}
+
+    def get_symbol_token(self, ticker: str) -> str:
+        """
+        Returns Angel One symbol token for a ticker.
+        Looks up NIFTY_50_TOKENS first; falls back to Angel One instrument search.
+        Returns empty string if not found.
+        """
+        try:
+            from feeds.ticker_registry import NIFTY_50_TOKENS
+            token = NIFTY_50_TOKENS.get(ticker, "")
+            if token:
+                return token
+
+            # Strip .NS suffix and try instrument search via Angel One
+            scrip = ticker.replace(".NS", "").replace(".BO", "")
+            if self.auth_token or self.authenticate():
+                try:
+                    result = self._api.searchScrip("NSE", scrip)
+                    if result and result.get("data"):
+                        for item in result["data"]:
+                            if item.get("tradingsymbol", "").upper() == scrip.upper():
+                                return str(item.get("symboltoken", ""))
+                except Exception:
+                    pass
+        except Exception as exc:
+            print(f"[angel_feed] get_symbol_token error for {ticker}: {exc}")
+        return ""
+
     def _require_credentials(self) -> None:
         missing = [
             name for name, val in [

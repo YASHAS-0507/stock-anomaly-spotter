@@ -962,6 +962,54 @@ def live_prices():
         return {"error": str(exc)}
 
 
+@app.get("/api/data/source")
+def data_source_status():
+    """Return current data source status and cache stats."""
+    try:
+        from feeds.data_provider import data_provider
+        from feeds.angel_feed import AngelOneFeed, _SMARTAPI_AVAILABLE, _PYOTP_AVAILABLE
+        import os
+
+        angel_creds_set = all(
+            os.environ.get(k)
+            for k in ("ANGEL_API_KEY", "ANGEL_CLIENT_ID", "ANGEL_PASSWORD", "ANGEL_TOTP_SECRET")
+        )
+        angel_connected      = _SMARTAPI_AVAILABLE and _PYOTP_AVAILABLE and angel_creds_set
+        angel_hist_available = angel_connected  # historical API available when SDK + creds present
+
+        try:
+            import yfinance as yf
+            yf_available = True
+        except ImportError:
+            yf_available = False
+
+        intraday_source = "angel_one" if angel_connected else "yfinance_fallback"
+
+        # Last Angel auth time (check singleton's auth_token)
+        last_angel_auth: str | None = None
+        try:
+            from feeds.angel_feed import AngelOneFeed as _AF
+            # We don't track auth time globally; report None unless connected
+            last_angel_auth = None
+        except Exception:
+            pass
+
+        cache_stats = data_provider.get_cache_stats()
+
+        return {
+            "angel_one_connected":   angel_connected,
+            "angel_one_historical":  angel_hist_available,
+            "yfinance_available":    yf_available,
+            "intraday_source":       intraday_source,
+            "daily_source":          "yfinance",
+            "macro_source":          "yfinance",
+            "last_angel_auth":       last_angel_auth,
+            "cache_stats":           cache_stats,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/shadow/report")
 def shadow_report():
     """Return shadow agents weekly performance report."""
