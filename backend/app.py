@@ -1019,6 +1019,40 @@ def shadow_report():
         return {"error": str(exc)}
 
 
+from decay.decay_monitor import decay_monitor as _decay_monitor
+
+
+@app.get("/api/decay/health")
+def decay_health():
+    """Return overall strategy decay system health summary."""
+    try:
+        return _decay_monitor.get_system_health_summary()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/decay/setups")
+def decay_setups():
+    """Return full per-setup decay assessment (cached from last run)."""
+    try:
+        if not _decay_monitor._health_cache:
+            return {"message": "No assessment run yet"}
+        return _decay_monitor._health_cache
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.post("/api/decay/run")
+def decay_run():
+    """Force an immediate decay assessment regardless of schedule."""
+    try:
+        trades = auto_broker.get_trade_history(limit=500)
+        result = _decay_monitor.assess_all_setups(trades)
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/expiry/today")
 def expiry_today():
     """Return F&O expiry context for today including risk multipliers."""
