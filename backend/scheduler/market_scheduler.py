@@ -52,6 +52,7 @@ from risk.intraday_sizer          import IntradaySizer
 from broker.auto_paper_broker     import auto_broker
 from shadow.shadow_manager        import shadow_manager
 from expiry.expiry_calendar       import expiry_calendar
+from decay.decay_monitor          import decay_monitor
 
 try:
     import schedule
@@ -396,12 +397,16 @@ class MarketScheduler:
         atr = features.get("atr_14", 0.0) or 0.0
         stop_loss = current_price - (atr * 1.5) if atr > 0 else current_price * 0.98
 
+        # Decay multiplier: AT_RISK setups trade at 50% size
+        setup_multipliers = decay_monitor.get_setup_risk_multipliers()
+        decay_mult = setup_multipliers.get(signal.get("setup_type", ""), 1.0)
+
         # Size the position
         sizing = self.sizer.calculate(
             entry_price=current_price,
             stop_loss=stop_loss,
             available_capital=auto_broker.capital,
-            size_multiplier=regime.get("size_multiplier", 1.0) * self.day_size_multiplier,
+            size_multiplier=regime.get("size_multiplier", 1.0) * self.day_size_multiplier * decay_mult,
             expiry_multiplier=self.day_expiry_risk_mult,
         )
         if not sizing.get("viable"):
@@ -489,6 +494,15 @@ class MarketScheduler:
             )
             logger.info("[scheduler] Shadow report recommendation: %s",
                         report.get("recommendation", "N/A"))
+
+            # Run decay monitor if due
+            all_trades = auto_broker.get_trade_history(limit=500)
+            ran = decay_monitor.run_if_due(all_trades)
+            if ran:
+                summary = decay_monitor.get_system_health_summary()
+                print(f"[decay] System health: {summary.get('system_health')}")
+                logger.info("[decay] Assessment complete: %s", summary.get("system_health"))
+
         except Exception as exc:
             logger.warning("[scheduler] post_market_3_30pm error: %s", exc)
 
