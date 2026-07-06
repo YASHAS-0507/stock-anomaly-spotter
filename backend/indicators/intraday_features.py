@@ -80,6 +80,20 @@ _DEFAULTS: dict = {
     "pivot_s1":             0.0,
     "pivot_s2":             0.0,
     "pivot_zone":           "between_s1_r1",
+    # Volume Profile (Day 18)
+    "vp_poc":                  0.0,
+    "vp_vah":                  0.0,
+    "vp_val":                  0.0,
+    "vp_prev_poc":             None,
+    "vp_total_volume":         0,
+    "price_vs_va":             "INSIDE_VA",
+    "price_at_poc":            False,
+    "price_at_vah":            False,
+    "price_at_val":            False,
+    "poc_distance_pct":        0.0,
+    "prev_poc_distance_pct":   None,
+    "at_prev_poc":             False,
+    "volume_profile_strength": "NORMAL",
 }
 
 
@@ -239,6 +253,10 @@ class IntradayFeatures:
         result["pivot_s2"]   = round(s2, 2)
         result["pivot_zone"] = _pivot_zone(price, r1, r2, s1, s2)
 
+        # ── Volume Profile (Day 18) ───────────────────────────────────────
+        vp_features = self.add_volume_profile(candles_5min, price)
+        result.update(vp_features)
+
         # ── Time context ──────────────────────────────────────────────────
         now_ist = datetime.now(IST)
         mins_open = _minutes_since_open(now_ist)
@@ -259,6 +277,203 @@ class IntradayFeatures:
     @staticmethod
     def _minutes_since_open_now() -> int:
         return _minutes_since_open(datetime.now(IST))
+
+    # ──────────────────────────────────────────────────────
+    # Volume Profile (Day 18)
+    # ──────────────────────────────────────────────────────
+
+    def add_volume_profile(
+        self,
+        candles: list,
+        current_price: float,
+        price_bins: int = 50,
+    ) -> dict:
+        _defaults = {
+            "vp_poc":                  current_price,
+            "vp_vah":                  current_price * 1.005,
+            "vp_val":                  current_price * 0.995,
+            "vp_prev_poc":             None,
+            "vp_total_volume":         0,
+            "price_vs_va":             "INSIDE_VA",
+            "price_at_poc":            False,
+            "price_at_vah":            False,
+            "price_at_val":            False,
+            "poc_distance_pct":        0.0,
+            "prev_poc_distance_pct":   None,
+            "at_prev_poc":             False,
+            "volume_profile_strength": "NORMAL",
+        }
+        try:
+            return self._volume_profile(candles, current_price, price_bins)
+        except Exception as exc:
+            logger.warning("[features] add_volume_profile() failed: %s", exc)
+            return _defaults
+
+    def _volume_profile(
+        self,
+        candles: list,
+        current_price: float,
+        price_bins: int,
+    ) -> dict:
+        if len(candles) < 10:
+            return {
+                "vp_poc":                  current_price,
+                "vp_vah":                  round(current_price * 1.005, 2),
+                "vp_val":                  round(current_price * 0.995, 2),
+                "vp_prev_poc":             None,
+                "vp_total_volume":         0,
+                "price_vs_va":             "INSIDE_VA",
+                "price_at_poc":            False,
+                "price_at_vah":            False,
+                "price_at_val":            False,
+                "poc_distance_pct":        0.0,
+                "prev_poc_distance_pct":   None,
+                "at_prev_poc":             False,
+                "volume_profile_strength": "NORMAL",
+            }
+
+        min_low  = min(float(c.get("low",  current_price) or current_price) for c in candles)
+        max_high = max(float(c.get("high", current_price) or current_price) for c in candles)
+        if max_high <= min_low:
+            max_high = min_low + 1.0
+
+        bin_size = (max_high - min_low) / price_bins
+        if bin_size <= 0:
+            bin_size = 0.01
+
+        volume_by_bin = [0.0] * price_bins
+        total_volume  = 0.0
+
+        for c in candles:
+            h  = float(c.get("high",   0) or 0)
+            l  = float(c.get("low",    0) or 0)
+            cl = float(c.get("close",  0) or 0)
+            v  = float(c.get("volume", 0) or 0)
+            tp = (h + l + cl) / 3.0
+            bi = int((tp - min_low) / bin_size)
+            bi = max(0, min(price_bins - 1, bi))
+            volume_by_bin[bi] += v
+            total_volume       += v
+
+        poc_bin = volume_by_bin.index(max(volume_by_bin))
+        poc     = min_low + (poc_bin + 0.5) * bin_size
+
+        # Value Area: expand from POC until 70% of total volume is covered
+        va_target = total_volume * 0.70
+        va_vol    = volume_by_bin[poc_bin]
+        lo, hi    = poc_bin, poc_bin
+
+        while va_vol < va_target and (lo > 0 or hi < price_bins - 1):
+            vol_below = volume_by_bin[lo - 1] if lo > 0              else 0.0
+            vol_above = volume_by_bin[hi + 1] if hi < price_bins - 1 else 0.0
+            if vol_below == 0 and vol_above == 0:
+                break
+            if vol_above >= vol_below and hi < price_bins - 1:
+                hi     += 1
+                va_vol += volume_by_bin[hi]
+            elif lo > 0:
+                lo     -= 1
+                va_vol += volume_by_bin[lo]
+            else:
+                hi     += 1
+                va_vol += volume_by_bin[hi]
+
+        vah = min_low + (hi + 1) * bin_size
+        val = min_low + lo        * bin_size
+
+        # Previous-day POC
+        prev_poc = None
+        try:
+            candle_dates = []
+            for c in candles:
+                ts = c.get("timestamp")
+                if ts:
+                    try:
+                        if isinstance(ts, (int, float)):
+                            dt = datetime.fromtimestamp(float(ts), tz=IST)
+                        else:
+                            dt = datetime.fromisoformat(str(ts))
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=IST)
+                            else:
+                                dt = dt.astimezone(IST)
+                        candle_dates.append((c, dt.date()))
+                    except Exception:
+                        candle_dates.append((c, None))
+                else:
+                    candle_dates.append((c, None))
+
+            known_dates = sorted(
+                {d for _, d in candle_dates if d is not None}, reverse=True
+            )
+            if len(known_dates) >= 2:
+                prev_date    = known_dates[1]
+                prev_candles = [c for c, d in candle_dates if d == prev_date]
+                if len(prev_candles) >= 5:
+                    p_min = min(float(c.get("low",  0) or 0) for c in prev_candles)
+                    p_max = max(float(c.get("high", 0) or 0) for c in prev_candles)
+                    if p_max > p_min:
+                        p_bs = (p_max - p_min) / price_bins
+                        if p_bs > 0:
+                            p_bins = [0.0] * price_bins
+                            for c in prev_candles:
+                                h  = float(c.get("high",   0) or 0)
+                                l  = float(c.get("low",    0) or 0)
+                                cl = float(c.get("close",  0) or 0)
+                                v  = float(c.get("volume", 0) or 0)
+                                tp = (h + l + cl) / 3.0
+                                bi = int((tp - p_min) / p_bs)
+                                bi = max(0, min(price_bins - 1, bi))
+                                p_bins[bi] += v
+                            p_poc_bin = p_bins.index(max(p_bins))
+                            prev_poc  = round(p_min + (p_poc_bin + 0.5) * p_bs, 2)
+        except Exception:
+            prev_poc = None
+
+        # Volume Profile strength
+        vp_strength = "NORMAL"
+        if len(candles) >= 20:
+            all_vols  = [float(c.get("volume", 0) or 0) for c in candles]
+            avg_vol   = sum(all_vols[-20:]) / 20.0
+            today_avg = total_volume / len(candles)
+            if today_avg > avg_vol * 1.5:
+                vp_strength = "STRONG"
+            elif today_avg < avg_vol * 0.7:
+                vp_strength = "WEAK"
+
+        tol         = 0.0025
+        price_at_poc = abs(current_price - poc) / poc < tol if poc > 0 else False
+        price_at_vah = abs(current_price - vah) / vah < tol if vah > 0 else False
+        price_at_val = abs(current_price - val) / val < tol if val > 0 else False
+        poc_dist     = round(abs(current_price - poc) / poc * 100, 4) if poc > 0 else 0.0
+
+        prev_poc_dist = None
+        at_prev_poc   = False
+        if prev_poc and prev_poc > 0:
+            prev_poc_dist = round(abs(current_price - prev_poc) / prev_poc * 100, 4)
+            at_prev_poc   = prev_poc_dist < 0.3
+
+        pva = (
+            "ABOVE_VAH" if current_price > vah else
+            "BELOW_VAL" if current_price < val else
+            "INSIDE_VA"
+        )
+
+        return {
+            "vp_poc":                  round(poc, 2),
+            "vp_vah":                  round(vah, 2),
+            "vp_val":                  round(val, 2),
+            "vp_prev_poc":             prev_poc,
+            "vp_total_volume":         int(total_volume),
+            "price_vs_va":             pva,
+            "price_at_poc":            price_at_poc,
+            "price_at_vah":            price_at_vah,
+            "price_at_val":            price_at_val,
+            "poc_distance_pct":        poc_dist,
+            "prev_poc_distance_pct":   prev_poc_dist,
+            "at_prev_poc":             at_prev_poc,
+            "volume_profile_strength": vp_strength,
+        }
 
 
 # ══════════════════════════════════════════════════════════════════

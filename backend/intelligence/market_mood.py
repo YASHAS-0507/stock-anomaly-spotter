@@ -139,6 +139,8 @@ class MarketMood:
         # Gift Nifty gap — not reliably available via free API; set to None
         gift_nifty_gap_pts = None
 
+        macro_score = macro.get("macro_score", 50.0)
+
         return {
             "vix":                 vix,
             "vix_regime":          regime,
@@ -149,7 +151,7 @@ class MarketMood:
             "fetched_at":          now_ist,
             "data_source":         source,
             # New macro fields
-            "macro_score":         macro.get("macro_score",         50.0),
+            "macro_score":         macro_score,
             "global_sentiment":    macro.get("global_sentiment",    "NEUTRAL"),
             "usdinr":              macro.get("usdinr",              83.0),
             "usdinr_change_pct":   macro.get("usdinr_change_pct",   0.0),
@@ -158,4 +160,11 @@ class MarketMood:
             "sp500_change_pct":    macro.get("sp500_change_pct",    0.0),
             "nikkei_change_pct":   macro.get("nikkei_change_pct",   0.0),
             "gift_nifty_gap_pts":  gift_nifty_gap_pts,
+            "morning_bias": (
+                "STRONG_BULL" if macro_score > 70 else
+                "BULL"        if macro_score > 60 else
+                "NEUTRAL"     if macro_score >= 40 else
+                "BEAR"        if macro_score >= 25 else
+                "STRONG_BEAR"
+            ),
         }
