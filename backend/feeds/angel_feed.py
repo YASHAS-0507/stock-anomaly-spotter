@@ -6,6 +6,9 @@ Angel One SmartAPI live market feed connector.
 Authentication: pyotp TOTP + SmartConnect REST login
 WebSocket:      SmartWebSocketV2 live tick stream
 Reconnect:      exponential backoff (5s → 10s → 30s max)
+Session cache:  module-level _AngelSession prevents burst re-logins.
+                At most ONE real TOTP login per 6-hour window, shared
+                across all AngelOneFeed instances in the process.
 
 All credentials are read exclusively from environment variables:
     ANGEL_API_KEY      — Angel One API key
@@ -18,13 +21,16 @@ import os
 import threading
 import time
 import logging
-from typing import Optional
+from datetime import datetime
+from typing import Optional, Callable
+
+import pytz
 
 logger = logging.getLogger(__name__)
 
+_IST = pytz.timezone("Asia/Kolkata")
+
 # ── Optional dependency guard ──────────────────────────────────────────────────
-# Imported lazily so the module is importable even if smartapi-python / pyotp
-# are not yet installed (e.g., during syntax checks).
 try:
     import pyotp
     _PYOTP_AVAILABLE = True
@@ -56,16 +62,20 @@ _MODE_LTP = 1
 # Backoff schedule in seconds
 _BACKOFF = [5, 10, 30]
 
-# ── Module-level session cache ─────────────────────────────────────────────────
-# Angel One JWTs last until IST midnight. We cache for 6 hours conservatively.
-# This prevents a fresh TOTP login on every per-ticker data_provider call.
-_TOKEN_TTL = 21600  # 6 hours in seconds
+# Session cache TTL — Angel One JWTs last 24h; we refresh every 6h for safety
+_TOKEN_TTL = 21600
 
+
+# ── Process-wide session cache ─────────────────────────────────────────────────
 
 class _AngelSession:
-    """Shared session state — one real TOTP login per _TOKEN_TTL window."""
+    """
+    Shared JWT session state — at most ONE real TOTP login per _TOKEN_TTL window.
+    All AngelOneFeed instances in this process share this cache via class variables.
+    threading.Lock prevents concurrent threads from all triggering simultaneous re-auth.
+    """
     _lock = threading.Lock()
-    api        = None
+    api         = None
     auth_token: str   = ""
     feed_token: str   = ""
     expiry:     float = 0.0
@@ -76,7 +86,7 @@ class _AngelSession:
 
     @classmethod
     def invalidate(cls) -> None:
-        """Force re-auth on next authenticate() call (e.g. after an API 401)."""
+        """Force a fresh login on the next authenticate() call."""
         cls.expiry = 0.0
 
 
@@ -86,7 +96,11 @@ class AngelOneFeed:
     authenticate → connect WebSocket → subscribe → receive ticks → reconnect.
     """
 
-    def __init__(self, on_tick_callback=None, on_disconnect_callback=None):
+    def __init__(
+        self,
+        on_tick_callback: Optional[Callable] = None,
+        on_disconnect_callback: Optional[Callable] = None,
+    ):
         """
         Parameters
         ----------
@@ -95,12 +109,16 @@ class AngelOneFeed:
             callback(ticker: str, price: float, volume: int, timestamp: float)
             Defaults to the shared candle_builder singleton.
         on_disconnect_callback : callable, optional
+<<<<<<< HEAD
             Called with no arguments when the WebSocket closes unexpectedly.
             Used by the scheduler to reset its _angel_connected flag.
+=======
+            Called with no args when the WebSocket closes unexpectedly.
+>>>>>>> origin/claude/bugfix-tz-feed-audit
         """
-        self._api_key    = os.environ.get("ANGEL_API_KEY", "")
-        self._client_id  = os.environ.get("ANGEL_CLIENT_ID", "")
-        self._password   = os.environ.get("ANGEL_PASSWORD", "")
+        self._api_key     = os.environ.get("ANGEL_API_KEY", "")
+        self._client_id   = os.environ.get("ANGEL_CLIENT_ID", "")
+        self._password    = os.environ.get("ANGEL_PASSWORD", "")
         self._totp_secret = os.environ.get("ANGEL_TOTP_SECRET", "")
 
         self.auth_token:  Optional[str] = None
@@ -113,6 +131,7 @@ class AngelOneFeed:
         self._stop_event: threading.Event = threading.Event()
         self._ws_thread:  Optional[threading.Thread] = None
         self._reconnect_attempt: int = 0
+        self._on_disconnect_cb: Optional[Callable] = on_disconnect_callback
 
         self._on_disconnect_cb = on_disconnect_callback
 
@@ -132,53 +151,51 @@ class AngelOneFeed:
 
     def authenticate(self) -> bool:
         """
-        Authenticate with Angel One SmartAPI, reusing a cached JWT when valid.
+        Authenticate with Angel One SmartAPI.
 
-        A module-level _AngelSession caches the JWT for _TOKEN_TTL seconds (6h).
-        Only one real TOTP login happens per TTL window regardless of how many
-        AngelOneFeed instances or concurrent threads call this method.
+        Fast path: reuses cached JWT if still within TTL window (≤6h old).
+        Slow path: acquires lock, does a real TOTP login, populates cache.
 
         Returns True on success, False on failure.
         """
-        self._require_deps()
-        self._require_credentials()
-
-        # ── Fast path: reuse cached session ───────────────────────────────
+        # ── Fast path: cached session still valid ──
         if _AngelSession.is_valid():
+            self._api       = _AngelSession.api
             self.auth_token = _AngelSession.auth_token
             self.feed_token = _AngelSession.feed_token
-            self._api       = _AngelSession.api
             remaining = int(_AngelSession.expiry - time.time())
-            logger.debug("[angel_feed] Reusing cached session (%ds remaining)", remaining)
-            print(f"[angel] Reusing cached session ({remaining}s remaining)")
+            print(f"[angel] Reusing cached session — expires in {remaining}s")
             return True
 
-        # ── Slow path: acquire lock, re-check, then real TOTP login ───────
+        # ── Slow path: real TOTP login under lock ──
         with _AngelSession._lock:
-            if _AngelSession.is_valid():  # another thread refreshed while we waited
+            # Double-check after acquiring lock (another thread may have just authenticated)
+            if _AngelSession.is_valid():
+                self._api       = _AngelSession.api
                 self.auth_token = _AngelSession.auth_token
                 self.feed_token = _AngelSession.feed_token
-                self._api       = _AngelSession.api
-                print("[angel] Session refreshed by peer thread — reusing")
                 return True
 
-            from datetime import datetime as _dt
-            print("[angel] Starting fresh authentication (no valid cached session)...")
-            print(f"[angel] Client ID: {self._client_id[:4]}...")
-            logger.info("[angel_feed] Authenticating client %s…", self._client_id)
+            self._require_deps()
+            self._require_credentials()
+
+            now_ist = datetime.now(_IST).strftime("%H:%M:%S IST")
+            print(f"[angel] Starting REAL authentication at {now_ist}…")
+            print(f"[angel] Client ID: {self._client_id[:4]}…")
+            logger.info("[angel_feed] Real TOTP login for client %s at %s", self._client_id, now_ist)
 
             try:
+                # TOTP must be generated fresh immediately before login
                 totp_code = pyotp.TOTP(self._totp_secret).now()
-                print(f"[angel] TOTP code: {totp_code}")
-                print(f"[angel] Current time: {_dt.now()}")
+                print(f"[angel] TOTP generated (time-sensitive — using immediately)")
             except Exception as exc:
                 print(f"[angel] TOTP generation failed: {exc}")
                 logger.error("[angel_feed] TOTP generation failed: %s", exc)
                 return False
 
             try:
-                api  = SmartConnect(api_key=self._api_key)
-                data = api.generateSession(
+                self._api = SmartConnect(api_key=self._api_key)
+                data = self._api.generateSession(
                     clientCode=self._client_id,
                     password=self._password,
                     totp=totp_code,
@@ -189,25 +206,19 @@ class AngelOneFeed:
                     logger.error("[angel_feed] generateSession failed: %s", data)
                     return False
 
-                auth_token = data["data"]["jwtToken"]
-                feed_token = api.getfeedToken()
+                self.auth_token = data["data"]["jwtToken"]
+                self.feed_token = self._api.getfeedToken()
 
-                # Populate shared cache
-                _AngelSession.api        = api
-                _AngelSession.auth_token = auth_token
-                _AngelSession.feed_token = feed_token
+                print(f"[angel] Auth OK — token prefix: {self.auth_token[:10]}…")
+                print(f"[angel] Feed token prefix: {self.feed_token[:10]}…")
+                logger.info("[angel_feed] Authenticated: client %s", self._client_id)
+
+                # Populate process-wide cache
+                _AngelSession.api        = self._api
+                _AngelSession.auth_token = self.auth_token
+                _AngelSession.feed_token = self.feed_token
                 _AngelSession.expiry     = time.time() + _TOKEN_TTL
 
-                self._api        = api
-                self.auth_token  = auth_token
-                self.feed_token  = feed_token
-
-                print(f"[angel] Auth result: {self.auth_token[:10]}...")
-                print(f"[angel] Feed token: {self.feed_token[:10]}...")
-                logger.info(
-                    "[angel_feed] Fresh auth complete: client %s, session valid %dh",
-                    self._client_id, _TOKEN_TTL // 3600,
-                )
                 self._reconnect_attempt = 0
                 return True
 
@@ -219,12 +230,11 @@ class AngelOneFeed:
     def connect_websocket(self) -> None:
         """
         Create a SmartWebSocketV2 instance and start it in a background thread.
-        Always re-authenticates to ensure a fresh TOTP token before connecting.
+        Calls authenticate() first — fast path if session cache is valid.
         """
         self._require_deps()
 
-        # Always generate a fresh TOTP and authenticate before each connect
-        print(f"[angel] WebSocket connecting to feed...")
+        print("[angel] WebSocket connecting…")
         ok = self.authenticate()
         if not ok:
             raise RuntimeError("Angel One authentication failed — cannot open WebSocket.")
@@ -237,10 +247,10 @@ class AngelOneFeed:
             feed_token=self.feed_token,
         )
 
-        self._sws.on_open    = self._handle_open
-        self._sws.on_data    = self._handle_data
-        self._sws.on_error   = self._handle_error
-        self._sws.on_close   = self._handle_close
+        self._sws.on_open  = self._handle_open
+        self._sws.on_data  = self._handle_data
+        self._sws.on_error = self._handle_error
+        self._sws.on_close = self._handle_close
 
         self._ws_thread = threading.Thread(
             target=self._run_ws,
@@ -252,11 +262,13 @@ class AngelOneFeed:
 
     def subscribe(self, tokens: list[str]) -> None:
         """
-        Subscribe to a list of NSE instrument tokens (as strings, e.g. ["2885"]).
+        Subscribe to a list of NSE instrument tokens (numeric strings, e.g. ["2885"]).
         Can be called before or after connect_websocket(); tokens are re-sent on
-        every reconnect.
+        every reconnect via _handle_open.
         """
         self._subscribed_tokens = list(tokens)
+        print(f"[feed] Subscribed to {len(tokens)} tokens: {tokens}")
+        logger.info("[feed] Subscribed to %d tokens: %s", len(tokens), tokens)
         if self._connected and self._sws:
             self._send_subscription()
 
@@ -264,6 +276,7 @@ class AngelOneFeed:
         """
         Disconnect and reconnect with exponential backoff.
         Called internally on connection loss; may also be called externally.
+        Respects Angel One rate limit: max 1 reconnect per 5 seconds.
         """
         if self._stop_event.is_set():
             return
@@ -280,7 +293,6 @@ class AngelOneFeed:
         if self._stop_event.is_set():
             return
 
-        # connect_websocket() authenticates internally (cache hit if token still valid)
         self.connect_websocket()
 
     def disconnect(self) -> None:
@@ -305,7 +317,7 @@ class AngelOneFeed:
     def _handle_open(self, wsapp) -> None:
         self._connected = True
         self._reconnect_attempt = 0
-        print("[angel] WebSocket on_open called")
+        print("[angel] WebSocket on_open — connection established")
         logger.info("[angel_feed] WebSocket connected.")
         if self._subscribed_tokens:
             self._send_subscription()
@@ -315,13 +327,12 @@ class AngelOneFeed:
         """
         Parse incoming tick and forward to the tick callback.
 
-        SmartWebSocketV2 delivers LTP ticks as dicts:
+        SmartWebSocketV2 LTP mode delivers ticks as dicts:
         {
             'token': '2885',
             'last_traded_price': 130350,   # paise → ÷100 = ₹1303.50
             'volume_trade_for_the_day': 45231,
             'exchange_timestamp': 1718000000000,  # milliseconds
-            ...
         }
         """
         try:
@@ -331,21 +342,19 @@ class AngelOneFeed:
             raw_volume = tick.get("volume_trade_for_the_day", 0)
             raw_ts     = tick.get("exchange_timestamp", 0)
 
-            # LTP from Angel One is in paise for NSE equity; convert to ₹
-            price = round(float(raw_ltp) / 100.0, 2)
+            # Angel One NSE equity LTP is in paise; convert to ₹
+            price  = round(float(raw_ltp) / 100.0, 2)
             volume = int(raw_volume)
 
-            # Timestamp: exchange_timestamp is in milliseconds
+            # exchange_timestamp is milliseconds
             ts = float(raw_ts) / 1000.0 if raw_ts else time.time()
 
-            # Resolve token → ticker symbol
+            # Resolve numeric token → ticker symbol (e.g. "2885" → "RELIANCE.NS")
             from feeds.ticker_registry import get_ticker_by_token
             ticker = get_ticker_by_token(raw_token) or raw_token
 
-            print(
-                f"{time.strftime('%H:%M:%S')}  {ticker}  LTP=₹{price:.2f}"
-                f"  Vol={volume}"
-            )
+            ist_time = datetime.now(_IST).strftime("%H:%M:%S")
+            print(f"[tick] symbol={ticker} price={price} time={ist_time}")
 
             if self._on_tick_cb and price > 0:
                 self._on_tick_cb(ticker, price, volume, ts)
@@ -359,11 +368,15 @@ class AngelOneFeed:
 
     def _handle_close(self, wsapp, *args) -> None:
         self._connected = False
-        # Extract close reason from optional args (close_status_code, close_msg)
-        reason = str(args[1]) if len(args) >= 2 and args[1] else (str(args[0]) if args else "unknown")
+        reason = (
+            str(args[1]) if len(args) >= 2 and args[1]
+            else (str(args[0]) if args else "unknown")
+        )
         print(f"[angel] WebSocket on_close: {reason}")
         logger.warning("[angel_feed] WebSocket closed — reason: %s", reason)
-        if self._on_disconnect_cb:
+
+        # Fire disconnect callback so callers can activate fallback
+        if self._on_disconnect_cb is not None:
             try:
                 self._on_disconnect_cb()
             except Exception:
@@ -386,37 +399,38 @@ class AngelOneFeed:
                 self.reconnect()
 
     def _send_subscription(self) -> None:
-        """Send subscribe request for all registered tokens (LTP mode, NSE)."""
+        """Send subscribe request for all registered tokens (LTP mode, NSE cash segment)."""
         if not self._sws or not self._subscribed_tokens:
             return
         token_list = [{"exchangeType": _NSE_EXCHANGE_TYPE, "tokens": self._subscribed_tokens}]
-        print(f"[angel] Subscribing {len(self._subscribed_tokens)} tickers")
-        logger.info("[angel_feed] Subscribing to %d tokens…", len(self._subscribed_tokens))
+        n = len(self._subscribed_tokens)
+        print(f"[feed] Sending subscription for {n} tokens (exchangeType=1 NSE cash, mode=LTP)")
+        logger.info("[feed] Sending subscription for %d tokens", n)
         try:
             self._sws.subscribe(
                 correlation_id="angel_feed",
                 mode=_MODE_LTP,
                 token_list=token_list,
             )
-            print("[angel] Subscribed successfully")
-            logger.info("[angel_feed] Subscribed to tokens: %s", self._subscribed_tokens)
+            print(f"[feed] Subscription ACK — {n} tokens active")
+            logger.info("[feed] Subscription ACK for %d tokens", n)
         except Exception as exc:
             logger.error("[angel_feed] Subscription error: %s", exc)
+            print(f"[angel] Subscription error: {exc}")
 
     def _start_keepalive(self) -> None:
-        """Start a daemon thread that pings the WebSocket every 30 seconds."""
+        """Daemon thread that pings the WebSocket every 30 seconds."""
         def _keepalive_loop():
             while not self._stop_event.is_set():
                 time.sleep(30)
                 if self._connected and self._sws:
                     try:
-                        # Attempt ping via underlying websocket socket
                         if hasattr(self._sws, "wsapp") and self._sws.wsapp:
                             sock = getattr(self._sws.wsapp, "sock", None)
                             if sock:
                                 sock.ping()
                     except Exception:
-                        pass  # Ping failure is non-fatal; reconnect handles dropout
+                        pass
 
         t = threading.Thread(target=_keepalive_loop, name="angel-keepalive", daemon=True)
         t.start()
@@ -449,13 +463,17 @@ class AngelOneFeed:
         """
         Fetches historical OHLCV candles from Angel One.
 
-        interval options: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE,
-                          THIRTY_MINUTE, ONE_HOUR, ONE_DAY
-        from_date/to_date format: "YYYY-MM-DD HH:MM"
+        Parameters
+        ----------
+        symbol_token : str  — Angel One numeric token (e.g. "2885")
+        interval     : str  — one of ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE,
+                              THIRTY_MINUTE, ONE_HOUR, ONE_DAY
+        from_date    : str  — "YYYY-MM-DD HH:MM" in IST
+        to_date      : str  — "YYYY-MM-DD HH:MM" in IST
+        exchange     : str  — "NSE" (default, NSE cash segment)
 
-        Returns list of dicts with keys:
-          timestamp, open, high, low, close, volume
-        Returns empty list on any error.
+        Returns list of dicts: {timestamp, open, high, low, close, volume}
+        Returns [] on any error.
         """
         try:
             if not self.auth_token:
@@ -474,6 +492,10 @@ class AngelOneFeed:
             response = self._api.getCandleData(params)
 
             if not response or not response.get("status"):
+                err_msg = str(response).lower() if response else ""
+                if "unauthori" in err_msg or "token" in err_msg or "access" in err_msg:
+                    print("[angel_feed] Auth error in getCandleData — invalidating session")
+                    _AngelSession.invalidate()
                 print(f"[angel_feed] getCandleData error: {response}")
                 # If the error looks like an auth expiry, invalidate the session cache
                 err_msg = str(response).lower() if response else ""
@@ -486,7 +508,7 @@ class AngelOneFeed:
             candles = []
             for row in rows:
                 try:
-                    # Each row: [timestamp, open, high, low, close, volume]
+                    # Row format: [timestamp, open, high, low, close, volume]
                     candles.append({
                         "timestamp": str(row[0]),
                         "open":      round(float(row[1]), 4),
@@ -509,13 +531,12 @@ class AngelOneFeed:
         days_back: int = 30,
     ) -> dict:
         """
-        Gets last N days of 5min and 1min candles for model warmup.
+        Gets last N days of 5-min and 1-min candles for model warmup.
         Returns {"1min": list, "5min": list}.
-        Handles IST timezone correctly.
+        All timestamps constructed in IST to comply with Angel One API requirements.
         """
-        from datetime import datetime, timezone, timedelta
-        IST = timezone(timedelta(hours=5, minutes=30))
-        now   = datetime.now(IST)
+        now   = datetime.now(_IST)
+        from datetime import timedelta
         start = now - timedelta(days=days_back)
         from_date = start.strftime("%Y-%m-%d %H:%M")
         to_date   = now.strftime("%Y-%m-%d %H:%M")
@@ -531,7 +552,7 @@ class AngelOneFeed:
     def get_symbol_token(self, ticker: str) -> str:
         """
         Returns Angel One symbol token for a ticker.
-        Looks up NIFTY_50_TOKENS first; falls back to Angel One instrument search.
+        Looks up NIFTY_50_TOKENS registry first; falls back to Angel One searchScrip.
         Returns empty string if not found.
         """
         try:
@@ -542,7 +563,7 @@ class AngelOneFeed:
 
             # Strip .NS suffix and try instrument search via Angel One
             scrip = ticker.replace(".NS", "").replace(".BO", "")
-            if self.auth_token or self.authenticate():
+            if self.authenticate():
                 try:
                     result = self._api.searchScrip("NSE", scrip)
                     if result and result.get("data"):
@@ -558,9 +579,9 @@ class AngelOneFeed:
     def _require_credentials(self) -> None:
         missing = [
             name for name, val in [
-                ("ANGEL_API_KEY",    self._api_key),
-                ("ANGEL_CLIENT_ID",  self._client_id),
-                ("ANGEL_PASSWORD",   self._password),
+                ("ANGEL_API_KEY",     self._api_key),
+                ("ANGEL_CLIENT_ID",   self._client_id),
+                ("ANGEL_PASSWORD",    self._password),
                 ("ANGEL_TOTP_SECRET", self._totp_secret),
             ]
             if not val

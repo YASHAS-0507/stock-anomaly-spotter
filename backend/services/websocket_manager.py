@@ -2,21 +2,28 @@
 websocket_manager.py
 --------------------
 Manages WebSocket connections and broadcasts real-time market status updates.
-Broadcasts every 5 seconds; heartbeat ping every 30 seconds.
+Broadcasts market status every 5 seconds; heartbeat ping every 30 seconds.
+Broadcasts live tick prices every 2 seconds when ticks are flowing.
 """
 
 import asyncio
 import json
 import time
-from datetime import datetime, timezone, timedelta
+import logging
+from datetime import datetime
 from typing import Set
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket
+
+import pytz
+
+logger = logging.getLogger(__name__)
+
+_IST = pytz.timezone("Asia/Kolkata")
 
 
 def _get_market_status() -> dict:
     """Compute NSE market status (9:15–15:30 IST, Mon–Fri)."""
-    IST = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(IST)
+    now = datetime.now(_IST)
     day = now.weekday()  # 0=Mon, 6=Sun
     total = now.hour * 60 + now.minute
     is_open = day < 5 and 555 <= total <= 930  # 9:15=555, 15:30=930
@@ -32,10 +39,10 @@ def _get_scheduler_snapshot() -> dict:
         from scheduler.market_scheduler import market_scheduler
         from broker.auto_paper_broker import auto_broker
         return {
-            "running":          market_scheduler.running,
-            "watchlist_count":  len(market_scheduler.watchlist),
-            "open_positions":   len(auto_broker.positions),
-            "daily_pnl":        round(auto_broker.daily_pnl, 2),
+            "running":         market_scheduler.running,
+            "watchlist_count": len(market_scheduler.watchlist),
+            "open_positions":  len(auto_broker.positions),
+            "daily_pnl":       round(auto_broker.daily_pnl, 2),
         }
     except Exception:
         return {"running": False, "watchlist_count": 0, "open_positions": 0, "daily_pnl": 0.0}
@@ -47,6 +54,19 @@ class WebSocketManager:
         self._broadcast_task: asyncio.Task | None = None
         self._heartbeat_task: asyncio.Task | None = None
         self._scheduler_task: asyncio.Task | None = None
+        self._price_task: asyncio.Task | None = None
+
+        # Thread-safe price store: updated from sync scheduler thread,
+        # read by async _price_broadcast_loop.
+        self._pending_prices: dict = {}
+
+    def update_price(self, ticker: str, price: float) -> None:
+        """
+        Thread-safe price update called from the sync tick handler.
+        Does not need a lock because dict assignment is atomic in CPython
+        and stale reads are acceptable (worst case: one missed tick).
+        """
+        self._pending_prices[ticker] = round(price, 2)
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -62,6 +82,8 @@ class WebSocketManager:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         if self._scheduler_task is None or self._scheduler_task.done():
             self._scheduler_task = asyncio.create_task(self._scheduler_broadcast_loop())
+        if self._price_task is None or self._price_task.done():
+            self._price_task = asyncio.create_task(self._price_broadcast_loop())
 
     def disconnect(self, websocket: WebSocket):
         self._connections.discard(websocket)
@@ -126,6 +148,43 @@ class WebSocketManager:
                     dead.add(ws)
             for ws in dead:
                 self._connections.discard(ws)
+
+    async def _price_broadcast_loop(self):
+        """
+        Broadcast live tick prices to all connected clients every 2 seconds.
+        Prices are accumulated from sync on_tick() calls via update_price().
+        """
+        while True:
+            await asyncio.sleep(2)
+            if not self._connections or not self._pending_prices:
+                continue
+
+            snapshot = dict(self._pending_prices)
+            payload = json.dumps({
+                "type":      "live_prices",
+                "timestamp": int(time.time() * 1000),
+                "data":      snapshot,
+            })
+
+            n_clients = len(self._connections)
+            n_prices  = len(snapshot)
+            dead = set()
+            for ws in list(self._connections):
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead.add(ws)
+            for ws in dead:
+                self._connections.discard(ws)
+
+            if n_clients > 0 and n_prices > 0:
+                logger.debug(
+                    "[tick_broadcast] Sent %d prices to %d frontend clients",
+                    n_prices, n_clients,
+                )
+                print(
+                    f"[tick_broadcast] Sent {n_prices} prices to {n_clients} frontend clients"
+                )
 
 
 websocket_manager = WebSocketManager()

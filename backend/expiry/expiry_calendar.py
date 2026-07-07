@@ -19,6 +19,14 @@ Do NOT try to trade expiry-specific patterns.
 
 import datetime
 
+import pytz
+_IST = pytz.timezone("Asia/Kolkata")
+
+
+def _today_ist() -> datetime.date:
+    """Return today's date in IST (safe on UTC servers like Railway)."""
+    return datetime.datetime.now(_IST).date()
+
 
 class ExpiryCalendar:
     """
@@ -54,7 +62,7 @@ class ExpiryCalendar:
         date: datetime.date object or None (uses today)
         """
         if date is None:
-            date = datetime.date.today()
+            date = _today_ist()
         if date.weekday() >= 5:  # Saturday=5, Sunday=6
             return False
         if date.strftime("%Y-%m-%d") in self._holiday_set:
@@ -68,7 +76,7 @@ class ExpiryCalendar:
         If Thursday is holiday, expiry moves to Wednesday.
         """
         if date is None:
-            date = datetime.date.today()
+            date = _today_ist()
 
         # Check if it's Thursday
         if date.weekday() == 3:  # Thursday
@@ -90,7 +98,7 @@ class ExpiryCalendar:
         If last Thursday is holiday → last Wednesday.
         """
         if date is None:
-            date = datetime.date.today()
+            date = _today_ist()
 
         # Find last Thursday of this month
         year = date.year
@@ -168,7 +176,7 @@ class ExpiryCalendar:
         }
         """
         if date is None:
-            date = datetime.date.today()
+            date = _today_ist()
 
         weekly = self.is_weekly_expiry(date)
         monthly = self.is_monthly_expiry(date)
