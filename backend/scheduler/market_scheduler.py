@@ -187,6 +187,14 @@ class MarketScheduler:
         checklist = self.pre_session_checklist()
         logger.info("[scheduler] Checklist: %s", checklist)
 
+        # Angel One auth test
+        try:
+            _test_feed = AngelOneFeed()
+            success = _test_feed.authenticate()
+            print(f"[angel] Auth test: {success}")
+        except Exception as exc:
+            print(f"[angel] Auth test failed: {exc}")
+
         try:
             mood = self.mood.get_mood()
             self.market_mood_cache = mood
