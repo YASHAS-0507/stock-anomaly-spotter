@@ -245,6 +245,21 @@ class AngelOneFeed:
         self._sws.on_error = self._handle_error
         self._sws.on_close = self._handle_close
 
+        # SmartWebSocketV2._on_close(self, wsapp) only accepts 2 args, but
+        # modern websocket-client calls on_close(ws, close_code, close_reason).
+        # Shadow the class method on this instance with a compat wrapper so the
+        # signature matches and our disconnect/reconnect logic actually fires.
+        _sws_ref = self._sws
+
+        def _compat_on_close(wsapp, close_code=None, close_reason=None):
+            logger.info(
+                "[angel_feed] WS closed — code=%s reason=%s", close_code, close_reason
+            )
+            if _sws_ref.on_close:
+                _sws_ref.on_close(wsapp)
+
+        self._sws._on_close = _compat_on_close
+
         self._ws_thread = threading.Thread(
             target=self._run_ws,
             name="angel-ws",
