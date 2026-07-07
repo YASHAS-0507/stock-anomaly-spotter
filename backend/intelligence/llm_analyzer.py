@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import sys
+import time as _time
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,14 @@ class LLMAnalyzer:
                 logger.info("[llm] GROQ_API_KEY not set — using keyword fallback")
             elif not _GROQ_OK:
                 logger.info("[llm] groq package not installed — using keyword fallback")
+
+        # Rate-limit protection
+        self._last_groq_call: float = 0.0
+        self._result_cache: dict = {}   # {ticker: (timestamp, result)}
+        self._min_call_interval = 2.0   # seconds between successive Groq calls
+        self._cache_ttl         = 600   # 10-minute cache TTL
+        self._max_retries       = 3
+        self._retry_wait_429    = 60    # seconds to wait after a 429
 
     # ──────────────────────────────────────────────────────
     # Public API
@@ -134,6 +143,14 @@ class LLMAnalyzer:
         headlines: list[str],
         market_mood: dict,
     ) -> dict:
+        # Serve from cache if fresh (10-minute TTL)
+        cached = self._result_cache.get(ticker)
+        if cached:
+            cached_ts, cached_result = cached
+            if _time.time() - cached_ts < self._cache_ttl:
+                logger.debug("[llm] Cache hit for %s", ticker)
+                return dict(cached_result)
+
         vix_regime = market_mood.get("vix_regime", "NORMAL")
         vix_val    = market_mood.get("vix", "N/A")
 
@@ -150,25 +167,51 @@ class LLMAnalyzer:
             f"Recent headlines:\n{headlines_text}"
         )
 
-        try:
-            response = self._client.chat.completions.create(
-                model=_GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_msg},
-                ],
-                temperature=0.1,
-                max_tokens=256,
-            )
-            raw = response.choices[0].message.content.strip()
-            parsed = self._parse_json(raw)
-            if parsed:
-                parsed["source"] = "groq"
-                return self._normalise(parsed)
-        except Exception as exc:
-            logger.debug("[llm] Groq call failed for %s: %s", ticker, exc)
+        for attempt in range(1, self._max_retries + 1):
+            # Enforce minimum inter-call delay to avoid burst rate limiting
+            elapsed = _time.time() - self._last_groq_call
+            if elapsed < self._min_call_interval:
+                _time.sleep(self._min_call_interval - elapsed)
 
-        # Groq failed → fall through to keyword fallback
+            try:
+                self._last_groq_call = _time.time()
+                response = self._client.chat.completions.create(
+                    model=_GROQ_MODEL,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_msg},
+                    ],
+                    temperature=0.1,
+                    max_tokens=256,
+                )
+                raw = response.choices[0].message.content.strip()
+                parsed = self._parse_json(raw)
+                if parsed:
+                    parsed["source"] = "groq"
+                    result = self._normalise(parsed)
+                    # Cache the successful result
+                    self._result_cache[ticker] = (_time.time(), dict(result))
+                    return result
+                break  # parse failure is not retriable
+            except Exception as exc:
+                exc_str = str(exc).lower()
+                is_429  = (
+                    "429" in exc_str
+                    or "rate_limit" in exc_str
+                    or "ratelimit" in exc_str
+                    or "too many requests" in exc_str
+                )
+                if is_429 and attempt < self._max_retries:
+                    logger.warning(
+                        "[llm] Groq 429 rate limit for %s — waiting %ds (attempt %d/%d)",
+                        ticker, self._retry_wait_429, attempt, self._max_retries,
+                    )
+                    _time.sleep(self._retry_wait_429)
+                    continue
+                logger.debug("[llm] Groq call failed for %s: %s", ticker, exc)
+                break
+
+        # All retries exhausted or non-retriable error → keyword fallback
         result = self._analyze_keywords(ticker, headlines, market_mood)
         result["source"] = "keyword_fallback_groq_error"
         return result
