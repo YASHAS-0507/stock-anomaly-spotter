@@ -106,12 +106,17 @@ class AngelOneFeed:
         self._require_deps()
         self._require_credentials()
 
-        print("[angel] Authenticating...")
+        from datetime import datetime as _dt
+        print(f"[angel] Starting authentication...")
+        print(f"[angel] Client ID: {self._client_id[:4]}...")
         logger.info("[angel_feed] Authenticating client %s…", self._client_id)
 
         try:
             totp_code = pyotp.TOTP(self._totp_secret).now()
+            print(f"[angel] TOTP code: {totp_code}")
+            print(f"[angel] Current time: {_dt.now()}")
         except Exception as exc:
+            print(f"[angel] TOTP generation failed: {exc}")
             logger.error("[angel_feed] TOTP generation failed: %s", exc)
             return False
 
@@ -124,18 +129,21 @@ class AngelOneFeed:
             )
 
             if not data or not data.get("status"):
+                print(f"[angel] generateSession failed: {data}")
                 logger.error("[angel_feed] generateSession failed: %s", data)
                 return False
 
             self.auth_token = data["data"]["jwtToken"]
             self.feed_token = self._api.getfeedToken()
 
-            print("[angel] Auth token received")
+            print(f"[angel] Auth result: {self.auth_token[:10]}...")
+            print(f"[angel] Feed token: {self.feed_token[:10]}...")
             logger.info("[angel_feed] Authenticated: Client ID %s", self._client_id)
             self._reconnect_attempt = 0
             return True
 
         except Exception as exc:
+            print(f"[angel] Authentication error: {exc}")
             logger.error("[angel_feed] Authentication error: %s", exc)
             return False
 
@@ -147,7 +155,7 @@ class AngelOneFeed:
         self._require_deps()
 
         # Always generate a fresh TOTP and authenticate before each connect
-        print("[angel] WebSocket connecting...")
+        print(f"[angel] WebSocket connecting to feed...")
         ok = self.authenticate()
         if not ok:
             raise RuntimeError("Angel One authentication failed — cannot open WebSocket.")
@@ -230,7 +238,7 @@ class AngelOneFeed:
     def _handle_open(self, wsapp) -> None:
         self._connected = True
         self._reconnect_attempt = 0
-        print("[angel] WebSocket connected")
+        print("[angel] WebSocket on_open called")
         logger.info("[angel_feed] WebSocket connected.")
         if self._subscribed_tokens:
             self._send_subscription()
@@ -280,13 +288,13 @@ class AngelOneFeed:
 
     def _handle_error(self, wsapp, error) -> None:
         logger.error("[angel_feed] WebSocket error: %s", error)
-        print(f"[angel_feed] WebSocket error: {error}")
+        print(f"[angel] WebSocket on_error: {error}")
 
     def _handle_close(self, wsapp, *args) -> None:
         self._connected = False
         # Extract close reason from optional args (close_status_code, close_msg)
         reason = str(args[1]) if len(args) >= 2 and args[1] else (str(args[0]) if args else "unknown")
-        print(f"[angel] WebSocket closed - reason: {reason}")
+        print(f"[angel] WebSocket on_close: {reason}")
         logger.warning("[angel_feed] WebSocket closed — reason: %s", reason)
         if not self._stop_event.is_set():
             time.sleep(5)
@@ -310,7 +318,7 @@ class AngelOneFeed:
         if not self._sws or not self._subscribed_tokens:
             return
         token_list = [{"exchangeType": _NSE_EXCHANGE_TYPE, "tokens": self._subscribed_tokens}]
-        print(f"[angel] Subscribing to tickers: {self._subscribed_tokens}")
+        print(f"[angel] Subscribing {len(self._subscribed_tokens)} tickers")
         logger.info("[angel_feed] Subscribing to %d tokens…", len(self._subscribed_tokens))
         try:
             self._sws.subscribe(
