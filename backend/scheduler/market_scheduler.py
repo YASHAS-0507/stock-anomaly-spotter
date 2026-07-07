@@ -97,6 +97,7 @@ class MarketScheduler:
         self.current_prices:       dict  = {}
         self.market_mood_cache:    dict  = {}
         self._feed: Optional[AngelOneFeed] = None
+        self._angel_connected: bool = False
 
         # Component instances
         self.candle_builder  = CandleBuilder()
@@ -517,6 +518,46 @@ class MarketScheduler:
         self.running = False
 
     # ──────────────────────────────────────────────────────
+    # Historical candle fallback loop
+    # ──────────────────────────────────────────────────────
+
+    def _historical_fallback_loop(self) -> None:
+        """
+        Background thread: when Angel One WebSocket is offline, fetches the
+        latest 5-min candle from the historical API every 5 minutes and feeds
+        it into on_new_candle() so the decision engine keeps running.
+        """
+        while self.running:
+            try:
+                now = datetime.now(IST)
+                time_str = f"{now.hour:02d}:{now.minute:02d}"
+
+                in_window1 = "09:30" <= time_str <= "11:30"
+                in_window2 = "14:00" <= time_str <= "14:45"
+
+                if (in_window1 or in_window2) and not self._angel_connected:
+                    print("[scheduler] Historical fallback: fetching candles for watchlist")
+
+                    from feeds.data_provider import data_provider
+                    for ticker in list(self.watchlist):
+                        try:
+                            candles, source = data_provider.get_intraday_candles(
+                                ticker,
+                                interval="FIVE_MINUTE",
+                                days_back=1,
+                            )
+                            if candles and len(candles) >= 2:
+                                latest = candles[-1]
+                                self.on_new_candle(ticker, "5min", latest)
+                        except Exception as exc:
+                            print(f"[fallback] {ticker}: {exc}")
+
+            except Exception as exc:
+                print(f"[fallback] loop error: {exc}")
+
+            time.sleep(300)  # 5 minutes
+
+    # ──────────────────────────────────────────────────────
     # Lifecycle
     # ──────────────────────────────────────────────────────
 
@@ -553,11 +594,24 @@ class MarketScheduler:
                 self._feed.connect_websocket()
                 time.sleep(2)
                 self._feed.subscribe(tokens)
+                self._angel_connected = True
                 logger.info("[scheduler] Angel One feed connected, %d tokens subscribed", len(tokens))
             else:
+                self._angel_connected = False
                 logger.warning("[scheduler] Angel One auth failed — running without live feed")
         except Exception as exc:
+            self._angel_connected = False
             logger.warning("[scheduler] Feed connection failed: %s — continuing", exc)
+
+        # Start historical fallback loop (fires every 5 min when Angel One is offline)
+        import threading as _threading
+        fallback_thread = _threading.Thread(
+            target=self._historical_fallback_loop,
+            name="historical-fallback",
+            daemon=True,
+        )
+        fallback_thread.start()
+        logger.info("[scheduler] Historical fallback thread started")
 
         # Set up schedule jobs
         if _SCHEDULE_OK:
