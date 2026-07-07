@@ -109,12 +109,7 @@ class AngelOneFeed:
             callback(ticker: str, price: float, volume: int, timestamp: float)
             Defaults to the shared candle_builder singleton.
         on_disconnect_callback : callable, optional
-<<<<<<< HEAD
-            Called with no arguments when the WebSocket closes unexpectedly.
-            Used by the scheduler to reset its _angel_connected flag.
-=======
             Called with no args when the WebSocket closes unexpectedly.
->>>>>>> origin/claude/bugfix-tz-feed-audit
         """
         self._api_key     = os.environ.get("ANGEL_API_KEY", "")
         self._client_id   = os.environ.get("ANGEL_CLIENT_ID", "")
@@ -132,8 +127,6 @@ class AngelOneFeed:
         self._ws_thread:  Optional[threading.Thread] = None
         self._reconnect_attempt: int = 0
         self._on_disconnect_cb: Optional[Callable] = on_disconnect_callback
-
-        self._on_disconnect_cb = on_disconnect_callback
 
         # Default tick callback → shared CandleBuilder singleton
         if on_tick_callback is not None:
@@ -251,6 +244,21 @@ class AngelOneFeed:
         self._sws.on_data  = self._handle_data
         self._sws.on_error = self._handle_error
         self._sws.on_close = self._handle_close
+
+        # SmartWebSocketV2._on_close(self, wsapp) only accepts 2 args, but
+        # modern websocket-client calls on_close(ws, close_code, close_reason).
+        # Shadow the class method on this instance with a compat wrapper so the
+        # signature matches and our disconnect/reconnect logic actually fires.
+        _sws_ref = self._sws
+
+        def _compat_on_close(wsapp, close_code=None, close_reason=None):
+            logger.info(
+                "[angel_feed] WS closed — code=%s reason=%s", close_code, close_reason
+            )
+            if _sws_ref.on_close:
+                _sws_ref.on_close(wsapp)
+
+        self._sws._on_close = _compat_on_close
 
         self._ws_thread = threading.Thread(
             target=self._run_ws,
@@ -381,6 +389,7 @@ class AngelOneFeed:
                 self._on_disconnect_cb()
             except Exception:
                 pass
+
         if not self._stop_event.is_set():
             time.sleep(5)
             self.reconnect()
@@ -497,11 +506,6 @@ class AngelOneFeed:
                     print("[angel_feed] Auth error in getCandleData — invalidating session")
                     _AngelSession.invalidate()
                 print(f"[angel_feed] getCandleData error: {response}")
-                # If the error looks like an auth expiry, invalidate the session cache
-                err_msg = str(response).lower() if response else ""
-                if "unauthori" in err_msg or "token" in err_msg or "access" in err_msg:
-                    _AngelSession.invalidate()
-                    logger.warning("[angel_feed] Auth error detected — session cache invalidated")
                 return []
 
             rows = response.get("data") or []

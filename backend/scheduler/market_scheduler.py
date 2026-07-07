@@ -105,9 +105,10 @@ class MarketScheduler:
         self._feed: Optional[AngelOneFeed] = None
         self._angel_connected: bool = False
 
-        # IST-aware EOD job flags — prevents double-firing
-        self._squared_off:      bool = False
-        self._post_market_done: bool = False
+        # IST-aware EOD job flags — date-stamped to prevent spurious firing on
+        # restarts that happen after market close (e.g. night deploys).
+        self._squared_off_date:      Optional[date] = None
+        self._post_market_done_date: Optional[date] = None
 
         # Component instances
         self.candle_builder  = CandleBuilder()
@@ -317,9 +318,6 @@ class MarketScheduler:
         if ticker not in self.watchlist:
             return
 
-        logger.debug("[scheduler] on_new_candle: %s close=%.2f (source: %s)",
-                     ticker, float(candle.get("close", 0) or 0),
-                     "live_ws" if self._angel_connected else "historical_fallback")
         try:
             self._process_candle(ticker, candle)
         except Exception as exc:
@@ -460,15 +458,17 @@ class MarketScheduler:
             now_ist  = datetime.now(_IST)
             now_mins = now_ist.hour * 60 + now_ist.minute
 
-            # IST-aware square-off at 15:15
-            if now_mins >= 15 * 60 + 15 and not self._squared_off:
-                self._squared_off = True
+            today_ist = now_ist.date()
+
+            # IST-aware square-off at 15:15 — only if not already run today
+            if now_mins >= 15 * 60 + 15 and self._squared_off_date != today_ist:
+                self._squared_off_date = today_ist
                 logger.info("[scheduler] 15:15 IST — triggering square-off")
                 self.square_off_3_15pm()
 
-            # IST-aware post-market at 15:30
-            if now_mins >= 15 * 60 + 30 and not self._post_market_done:
-                self._post_market_done = True
+            # IST-aware post-market at 15:30 — only if not already run today
+            if now_mins >= 15 * 60 + 30 and self._post_market_done_date != today_ist:
+                self._post_market_done_date = today_ist
                 logger.info("[scheduler] 15:30 IST — triggering post-market")
                 self.post_market_3_30pm()
 
@@ -545,16 +545,6 @@ class MarketScheduler:
         self.running = False
 
     # ──────────────────────────────────────────────────────
-    # Angel One connection state callbacks
-    # ──────────────────────────────────────────────────────
-
-    def _on_angel_disconnect(self) -> None:
-        """Called by AngelOneFeed._handle_close() — activates the fallback loop."""
-        self._angel_connected = False
-        logger.warning("[scheduler] Angel One WebSocket disconnected — historical fallback activated")
-        print("[scheduler] Angel One disconnected — historical fallback will run every 5min")
-
-    # ──────────────────────────────────────────────────────
     # Historical candle fallback loop
     # ──────────────────────────────────────────────────────
 
@@ -623,8 +613,8 @@ class MarketScheduler:
 
         logger.info("[scheduler] ========= MARKET SCHEDULER STARTING =========")
         self.running = True
-        self._squared_off      = False
-        self._post_market_done = False
+        self._squared_off_date      = None
+        self._post_market_done_date = None
 
         self.pre_market_8am()
         if self.skip_today:
