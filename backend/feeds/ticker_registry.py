@@ -58,9 +58,8 @@ NIFTY_50_TOKENS: dict[str, str] = {
     "APOLLOHOSP.NS":  "157",
     "NESTLEIND.NS":   "17963",
     "M&M.NS":         "2031",
-    "SHREECEM.NS":    "3103",
+    "ZOMATO.NS":      "5097",
     "UPL.NS":         "11287",
-    "WIPRO.NS":       "3787",
 }
 
 # Sector map — used to prevent two positions in the same sector simultaneously
@@ -112,7 +111,7 @@ SECTOR_MAP: dict[str, str] = {
     "APOLLOHOSP.NS":  "Healthcare",
     "NESTLEIND.NS":   "FMCG",
     "M&M.NS":         "Automobile",
-    "SHREECEM.NS":    "Cement",
+    "ZOMATO.NS":      "Consumer Internet",
     "UPL.NS":         "Chemicals",
 }
 

@@ -10,9 +10,9 @@ xgboost==1.7.6
 lightgbm
 redis==5.0.1
 psutil
-smartapi-python
-pyotp
-websocket-client
+smartapi-python==1.3.4
+pyotp==2.9.0
+websocket-client==1.6.1
 schedule
 feedparser
 groq==1.5.0
