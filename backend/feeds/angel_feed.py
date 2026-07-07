@@ -34,12 +34,18 @@ except ImportError:
 
 try:
     from SmartApi import SmartConnect
-    from SmartApi.SmartWebSocketV2 import SmartWebSocketV2
+    from SmartApi.smartWebSocketV2 import SmartWebSocketV2
     _SMARTAPI_AVAILABLE = True
 except ImportError:
-    _SMARTAPI_AVAILABLE = False
-    SmartConnect = None      # type: ignore
-    SmartWebSocketV2 = None  # type: ignore
+    try:
+        from smartapi import SmartConnect
+        from smartapi.smartWebSocketV2 import SmartWebSocketV2
+        _SMARTAPI_AVAILABLE = True
+    except ImportError:
+        _SMARTAPI_AVAILABLE = False
+        SmartConnect = None      # type: ignore
+        SmartWebSocketV2 = None  # type: ignore
+        print("[angel] SmartApi not installed")
 
 # NSE Cash Market exchange type for SmartWebSocketV2
 _NSE_EXCHANGE_TYPE = 1
