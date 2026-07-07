@@ -83,22 +83,39 @@ app = FastAPI(title="Stock Anomaly Spotter API")
 @app.on_event("startup")
 def startup_event():
     """
-    Warms up the ML engine by processing the raw data into the 
+    Warms up the ML engine by processing the raw data into the
     required feature format before training.
     """
-    from data_pipeline import get_price_data
-    from features import build_feature_table # Ensure this is imported
-    
-    # 1. Get raw data
-    historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
-    
-    # 2. CRITICAL: Process the raw data into the required feature format
-    # This matches the schema the model expects
-    processed_df = build_feature_table(historical_df)
-    
-    # 3. Train using the processed features
-    intelligence_core.initialize_production_model(processed_df)
-    print("[app] ML Intelligence Core warmed up with processed features.")
+    import datetime as _dt, pytz as _pytz, sys as _sys
+
+    _IST = _pytz.timezone("Asia/Kolkata")
+    _utc_now  = _dt.datetime.now(_pytz.utc)
+    _ist_now  = _dt.datetime.now(_IST)
+    _server_tz = _dt.datetime.now().astimezone().tzname()
+    _mins     = _ist_now.hour * 60 + _ist_now.minute
+
+    def is_market_open() -> bool:
+        return (9 * 60 + 15) <= _mins <= (15 * 60 + 30) and _ist_now.weekday() < 5
+
+    print("=" * 60)
+    print(f"[TZ_AUDIT] Server clock TZ   : {_server_tz}")
+    print(f"[TZ_AUDIT] Server UTC time   : {_utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"[TZ_AUDIT] Converted IST time: {_ist_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"[TZ_AUDIT] Offset UTC→IST    : +5:30 (Asia/Kolkata)")
+    print(f"[TZ_AUDIT] Market open now   : {is_market_open()}")
+    print("=" * 60)
+    _sys.stdout.flush()
+
+    try:
+        from data_pipeline import get_price_data
+        from features import build_feature_table
+
+        historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
+        processed_df = build_feature_table(historical_df)
+        intelligence_core.initialize_production_model(processed_df)
+        print("[app] ML Intelligence Core warmed up with processed features.")
+    except Exception as _e:
+        print(f"[app] ML warmup skipped (yfinance unavailable on this host): {_e}")
 
 # =====================================================================
 # STAGE 6: STATE MANAGEMENT (IN-MEMORY PORTFOLIO TRACKER)
@@ -604,7 +621,7 @@ def get_decision(
 
     except Exception as exc:
         from datetime import datetime, timezone, timedelta
-        ts = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%H:%M:%S IST")
+        import pytz as _pytz; ts = datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M:%S IST")
         return {
             "decision":          "BLOCKED",
             "signal":            "BLOCKED",
@@ -896,8 +913,9 @@ def emergency_stop_scheduler():
 def scheduler_status():
     """Return full scheduler and broker status."""
     try:
-        from datetime import datetime, timezone, timedelta
-        _IST = timezone(timedelta(hours=5, minutes=30))
+        import pytz as _pytz
+        from datetime import datetime
+        _IST = _pytz.timezone("Asia/Kolkata")
         now = datetime.now(_IST)
         now_mins = now.hour * 60 + now.minute
         market_open = (
@@ -1066,8 +1084,9 @@ def expiry_today():
 @app.get("/api/health/full")
 def full_health_check():
     """Return complete system health for deployment readiness checks."""
-    from datetime import datetime, timezone, timedelta
-    _IST = timezone(timedelta(hours=5, minutes=30))
+    import pytz as _pytz
+    from datetime import datetime
+    _IST = _pytz.timezone("Asia/Kolkata")
     ts = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
     checks: Dict[str, str] = {}
