@@ -5,118 +5,83 @@ FastAPI router for intraday OHLCV candle data.
 
 GET /api/candles/{ticker}?interval=5min&limit=100
 
-Returns live candles from candle_builder if available,
-falls back to yfinance historical data if market is closed.
-Computes VWAP, EMA9, EMA21 server-side.
+Single source of truth: reads directly from the in-memory candle_builder
+store that the Angel One WebSocket tick pipeline populates in real time.
+
+No external data source (yfinance, Angel One historical API) is ever
+called from this endpoint.  If the store is empty — pre-market, or before
+the first Angel One tick arrives — the endpoint returns an empty list with
+a human-readable message.  The frontend renders nothing rather than a
+stale/wrong chart.
+
+Response shape:
+{
+    ticker:      str,
+    interval:    str,            # "1min" | "5min" | "15min"
+    candles:     list[dict],     # [{timestamp, open, high, low, close,
+                                 #   volume, vwap, ema9, ema21}, ...]
+    count:       int,
+    source:      str,            # "live_builder" | "builder_error"
+    market_open: bool,
+    message:     str | null,     # non-null only when candles is empty
+}
 """
 
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+import logging
+from datetime import datetime
+
+import pytz
 from fastapi import APIRouter, Query, Path
 
-IST = timezone(timedelta(hours=5, minutes=30))
+logger = logging.getLogger(__name__)
+
+_IST = pytz.timezone("Asia/Kolkata")
 
 router = APIRouter(prefix="/api/candles", tags=["candles"])
 
 VALID_INTERVALS = {"1min", "5min", "15min"}
 
-# Map internal interval keys to yfinance interval strings
-_YF_INTERVAL = {
-    "1min":  "1m",
-    "5min":  "5m",
-    "15min": "15m",
-}
 
-
-# ─── helpers ──────────────────────────────────────────────────────────────────
+# ─── indicator helpers (stateless, no I/O) ────────────────────────────────────
 
 def _compute_ema(values: list, period: int) -> list:
-    k = 2 / (period + 1)
+    k   = 2 / (period + 1)
     ema = None
-    result = []
+    out = []
     for v in values:
         if v is None:
-            result.append(None)
+            out.append(None)
             continue
         ema = v if ema is None else v * k + ema * (1 - k)
-        result.append(round(ema, 2))
-    return result
+        out.append(round(ema, 2))
+    return out
 
 
 def _compute_vwap(candles: list) -> list:
     cum_tp_vol = 0.0
     cum_vol    = 0.0
-    result     = []
+    out        = []
     for c in candles:
-        vol  = c.get("volume") or 1
-        tp   = (c["high"] + c["low"] + c["close"]) / 3
+        vol         = c.get("volume") or 1
+        tp          = (c["high"] + c["low"] + c["close"]) / 3
         cum_tp_vol += tp * vol
         cum_vol    += vol
-        result.append(round(cum_tp_vol / cum_vol, 2) if cum_vol > 0 else None)
-    return result
-
-
-def _annotate(candles: list) -> list:
-    """Add VWAP, EMA9, EMA21 to each candle dict."""
-    if not candles:
-        return candles
-    vwap  = _compute_vwap(candles)
-    closes = [c["close"] for c in candles]
-    ema9  = _compute_ema(closes, 9)
-    ema21 = _compute_ema(closes, 21)
-    out = []
-    for i, c in enumerate(candles):
-        out.append({
-            **c,
-            "vwap":  vwap[i],
-            "ema9":  ema9[i],
-            "ema21": ema21[i],
-        })
+        out.append(round(cum_tp_vol / cum_vol, 2) if cum_vol > 0 else None)
     return out
 
 
-def _is_market_open() -> bool:
-    now   = datetime.now(IST)
-    day   = now.weekday()          # 0=Mon … 6=Sun
-    total = now.hour * 60 + now.minute
-    return day < 5 and 555 <= total <= 930  # 9:15–15:30 IST
-
-
-def _candles_from_builder(ticker: str, interval: str, limit: int) -> list:
-    """Try to pull completed candles from the in-process candle_builder."""
-    try:
-        from feeds.candle_builder import candle_builder
-        # candle_builder uses '1min'/'5min' keys; '15min' not built live
-        tf_key = interval if interval in ("1min", "5min") else "5min"
-        raw = candle_builder.get_candles(ticker, tf_key, limit)
-        return raw
-    except Exception:
+def _annotate(candles: list) -> list:
+    """Attach VWAP, EMA9, EMA21 to each candle dict in-place (returns new list)."""
+    if not candles:
         return []
-
-
-def _candles_from_yfinance(ticker: str, interval: str, limit: int) -> list:
-    """Fetch historical candles via yfinance as fallback."""
-    try:
-        import yfinance as yf
-        yf_iv  = _YF_INTERVAL.get(interval, "5m")
-        period = "1d" if interval in ("1min", "5min") else "5d"
-        df = yf.Ticker(ticker).history(period=period, interval=yf_iv)
-        if df.empty:
-            return []
-        candles = []
-        for ts, row in df.tail(limit).iterrows():
-            ist_ts = ts.tz_convert(IST) if ts.tzinfo else ts.tz_localize("UTC").tz_convert(IST)
-            candles.append({
-                "timestamp": ist_ts.isoformat(),
-                "open":   round(float(row["Open"]),   2),
-                "high":   round(float(row["High"]),   2),
-                "low":    round(float(row["Low"]),    2),
-                "close":  round(float(row["Close"]),  2),
-                "volume": int(row["Volume"]),
-            })
-        return candles
-    except Exception:
-        return []
+    vwap   = _compute_vwap(candles)
+    closes = [c["close"] for c in candles]
+    ema9   = _compute_ema(closes, 9)
+    ema21  = _compute_ema(closes, 21)
+    return [
+        {**c, "vwap": vwap[i], "ema9": ema9[i], "ema21": ema21[i]}
+        for i, c in enumerate(candles)
+    ]
 
 
 # ─── endpoint ─────────────────────────────────────────────────────────────────
@@ -130,22 +95,47 @@ def get_candles(
     if interval not in VALID_INTERVALS:
         interval = "5min"
 
-    source  = "live"
+    # candle_builder aggregates 1min and 5min timeframes.
+    # 15min requests are served from the 5min store (best available live data).
+    tf_key = interval if interval in ("1min", "5min") else "5min"
+
     candles = []
+    source  = "live_builder"
 
-    if _is_market_open():
-        candles = _candles_from_builder(ticker, interval, limit)
-
-    if not candles:
-        source  = "historical"
-        candles = _candles_from_yfinance(ticker, interval, limit)
+    try:
+        from feeds.candle_builder import candle_builder
+        candles = candle_builder.get_candles(ticker, tf_key, limit)
+    except Exception as exc:
+        logger.warning("[candles] builder read error %s/%s: %s", ticker, tf_key, exc)
+        source = "builder_error"
 
     candles = _annotate(candles)
 
+    print(f"[candles] {ticker} {interval} → {len(candles)} candles from live store")
+    logger.info("[candles] %s %s → %d candles from live store", ticker, interval, len(candles))
+
+    now_ist     = datetime.now(_IST)
+    market_open = now_ist.weekday() < 5 and (9 * 60 + 15) <= (now_ist.hour * 60 + now_ist.minute) <= (15 * 60 + 30)
+
+    message = None
+    if not candles:
+        if market_open:
+            message = (
+                f"No {interval} candles for {ticker} yet — "
+                "Angel One ticks are live but the first candle completes at the next minute boundary"
+            )
+        else:
+            message = (
+                f"No {interval} candles for {ticker} — "
+                "live store is empty outside market hours (09:15–15:30 IST weekdays)"
+            )
+
     return {
-        "ticker":   ticker,
-        "interval": interval,
-        "candles":  candles,
-        "count":    len(candles),
-        "source":   source,
+        "ticker":      ticker,
+        "interval":    interval,
+        "candles":     candles,
+        "count":       len(candles),
+        "source":      source,
+        "market_open": market_open,
+        "message":     message,
     }
