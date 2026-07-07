@@ -106,6 +106,9 @@ class AngelOneFeed:
         self._require_deps()
         self._require_credentials()
 
+        print("[angel] Authenticating...")
+        logger.info("[angel_feed] Authenticating client %s…", self._client_id)
+
         try:
             totp_code = pyotp.TOTP(self._totp_secret).now()
         except Exception as exc:
@@ -127,8 +130,8 @@ class AngelOneFeed:
             self.auth_token = data["data"]["jwtToken"]
             self.feed_token = self._api.getfeedToken()
 
+            print("[angel] Auth token received")
             logger.info("[angel_feed] Authenticated: Client ID %s", self._client_id)
-            print(f"Authenticated: Client ID {self._client_id}")
             self._reconnect_attempt = 0
             return True
 
@@ -139,14 +142,15 @@ class AngelOneFeed:
     def connect_websocket(self) -> None:
         """
         Create a SmartWebSocketV2 instance and start it in a background thread.
-        Authenticate first if auth_token is not yet available.
+        Always re-authenticates to ensure a fresh TOTP token before connecting.
         """
         self._require_deps()
 
-        if not self.auth_token:
-            ok = self.authenticate()
-            if not ok:
-                raise RuntimeError("Angel One authentication failed — cannot open WebSocket.")
+        # Always generate a fresh TOTP and authenticate before each connect
+        print("[angel] WebSocket connecting...")
+        ok = self.authenticate()
+        if not ok:
+            raise RuntimeError("Angel One authentication failed — cannot open WebSocket.")
 
         self._stop_event.clear()
         self._sws = SmartWebSocketV2(
@@ -226,10 +230,11 @@ class AngelOneFeed:
     def _handle_open(self, wsapp) -> None:
         self._connected = True
         self._reconnect_attempt = 0
+        print("[angel] WebSocket connected")
         logger.info("[angel_feed] WebSocket connected.")
-        print("WebSocket connected")
         if self._subscribed_tokens:
             self._send_subscription()
+        self._start_keepalive()
 
     def _handle_data(self, wsapp, message) -> None:
         """
@@ -277,11 +282,14 @@ class AngelOneFeed:
         logger.error("[angel_feed] WebSocket error: %s", error)
         print(f"[angel_feed] WebSocket error: {error}")
 
-    def _handle_close(self, wsapp) -> None:
+    def _handle_close(self, wsapp, *args) -> None:
         self._connected = False
-        logger.warning("[angel_feed] WebSocket closed.")
-        print("[angel_feed] WebSocket closed.")
+        # Extract close reason from optional args (close_status_code, close_msg)
+        reason = str(args[1]) if len(args) >= 2 and args[1] else (str(args[0]) if args else "unknown")
+        print(f"[angel] WebSocket closed - reason: {reason}")
+        logger.warning("[angel_feed] WebSocket closed — reason: %s", reason)
         if not self._stop_event.is_set():
+            time.sleep(5)
             self.reconnect()
 
     # ─────────────────────────────────────────────────────
@@ -302,16 +310,36 @@ class AngelOneFeed:
         if not self._sws or not self._subscribed_tokens:
             return
         token_list = [{"exchangeType": _NSE_EXCHANGE_TYPE, "tokens": self._subscribed_tokens}]
+        print(f"[angel] Subscribing to tickers: {self._subscribed_tokens}")
+        logger.info("[angel_feed] Subscribing to %d tokens…", len(self._subscribed_tokens))
         try:
             self._sws.subscribe(
                 correlation_id="angel_feed",
                 mode=_MODE_LTP,
                 token_list=token_list,
             )
+            print("[angel] Subscribed successfully")
             logger.info("[angel_feed] Subscribed to tokens: %s", self._subscribed_tokens)
-            print(f"Subscribed to tokens: {self._subscribed_tokens}")
         except Exception as exc:
             logger.error("[angel_feed] Subscription error: %s", exc)
+
+    def _start_keepalive(self) -> None:
+        """Start a daemon thread that pings the WebSocket every 30 seconds."""
+        def _keepalive_loop():
+            while not self._stop_event.is_set():
+                time.sleep(30)
+                if self._connected and self._sws:
+                    try:
+                        # Attempt ping via underlying websocket socket
+                        if hasattr(self._sws, "wsapp") and self._sws.wsapp:
+                            sock = getattr(self._sws.wsapp, "sock", None)
+                            if sock:
+                                sock.ping()
+                    except Exception:
+                        pass  # Ping failure is non-fatal; reconnect handles dropout
+
+        t = threading.Thread(target=_keepalive_loop, name="angel-keepalive", daemon=True)
+        t.start()
 
     @staticmethod
     def _require_deps() -> None:
