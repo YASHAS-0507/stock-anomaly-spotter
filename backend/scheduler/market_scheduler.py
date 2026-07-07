@@ -578,7 +578,7 @@ class MarketScheduler:
                                 self.on_new_candle(ticker, "5min", latest)
                         except Exception as exc:
                             print(f"[fallback] {ticker}: {exc}")
-                        time.sleep(0.4)  # 3 req/sec rate-limit headroom
+                        time.sleep(0.6)  # ~1.6 req/sec — safe headroom under 3 req/sec limit
 
             except Exception as exc:
                 print(f"[fallback] loop error: {exc}")

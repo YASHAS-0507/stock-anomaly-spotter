@@ -95,20 +95,18 @@ def startup_event():
     _mins = _now_ist.hour * 60 + _now_ist.minute
     _is_open = (9 * 60 + 15) <= _mins <= (15 * 60 + 30) and _now_ist.weekday() < 5
     print(f"[timezone_check] UTC={_utcnow} IST={_now_ist_str} market_open={_is_open}")
+    import sys as _sys; _sys.stdout.flush()
 
-    from data_pipeline import get_price_data
-    from features import build_feature_table # Ensure this is imported
-    
-    # 1. Get raw data
-    historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
-    
-    # 2. CRITICAL: Process the raw data into the required feature format
-    # This matches the schema the model expects
-    processed_df = build_feature_table(historical_df)
-    
-    # 3. Train using the processed features
-    intelligence_core.initialize_production_model(processed_df)
-    print("[app] ML Intelligence Core warmed up with processed features.")
+    try:
+        from data_pipeline import get_price_data
+        from features import build_feature_table
+
+        historical_df, _ = get_price_data("RELIANCE.NS", period="1y")
+        processed_df = build_feature_table(historical_df)
+        intelligence_core.initialize_production_model(processed_df)
+        print("[app] ML Intelligence Core warmed up with processed features.")
+    except Exception as _e:
+        print(f"[app] ML warmup skipped (yfinance unavailable on this host): {_e}")
 
 # =====================================================================
 # STAGE 6: STATE MANAGEMENT (IN-MEMORY PORTFOLIO TRACKER)

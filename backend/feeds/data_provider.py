@@ -39,10 +39,14 @@ _IST = pytz.timezone("Asia/Kolkata")
 _MACRO_TICKERS = ["^INDIAVIX", "USDINR=X", "CL=F", "^GSPC", "^N225"]
 
 # Module-level singleton — reuse one AngelOneFeed so _AngelSession cache is shared.
-# Creating a fresh AngelOneFeed() per ticker call causes burst logins that hit the
-# Angel One rate limiter after ~4-5 calls.
 _angel_feed_singleton = None
 _angel_feed_lock = threading.Lock()
+
+# Process-wide rate limiter for Angel One historical API (max 3 req/sec).
+# The scanner runs 8 parallel threads; without this they'd burst all at once.
+_angel_api_lock = threading.Lock()
+_angel_last_call: float = 0.0
+_ANGEL_MIN_INTERVAL = 0.35  # seconds between historical API calls → ~2.8 req/sec max
 
 
 def _get_angel_feed():
@@ -53,6 +57,24 @@ def _get_angel_feed():
                 from feeds.angel_feed import AngelOneFeed
                 _angel_feed_singleton = AngelOneFeed()
     return _angel_feed_singleton
+
+
+def _angel_throttled(fn):
+    """Serialize all Angel One historical API calls and enforce ≤3 req/sec."""
+    global _angel_last_call
+    with _angel_api_lock:
+        elapsed = time.time() - _angel_last_call
+        if elapsed < _ANGEL_MIN_INTERVAL:
+            time.sleep(_ANGEL_MIN_INTERVAL - elapsed)
+        result = fn()
+        _angel_last_call = time.time()
+        return result
+
+
+def _period_to_days(period: str) -> int:
+    """Convert yfinance-style period string to calendar days."""
+    _map = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 375, "2y": 740}
+    return _map.get(period, 35)
 
 
 class DataProvider:
@@ -81,6 +103,13 @@ class DataProvider:
         cached = self._get_cached(cache_key, self._cache_ttl["daily"])
         if cached is not None:
             return cached["df"], cached["source"]
+        # Try Angel One first — not subject to Railway IP blocks
+        days_back = _period_to_days(period)
+        df, source = self._angel_daily_ohlcv(ticker, days_back=days_back)
+        if df is not None and not df.empty:
+            self._set_cache(cache_key, {"df": df, "source": source})
+            return df, source
+        # Fallback: yfinance (may be blocked on Railway for .NS tickers)
         try:
             from data_pipeline import get_price_data
             df, is_synthetic = get_price_data(ticker, period=period)
@@ -125,7 +154,7 @@ class DataProvider:
             if not token:
                 return [], "no_token"
             key = "1min" if interval == "ONE_MINUTE" else "5min"
-            warmup = feed.get_warmup_candles(token, days_back=days_back)
+            warmup = _angel_throttled(lambda: feed.get_warmup_candles(token, days_back=days_back))
             candles = warmup.get(key, [])
             if candles:
                 logger.debug("[data_provider] angel_intraday %s: %d candles", ticker, len(candles))
@@ -158,6 +187,52 @@ class DataProvider:
         except Exception as exc:
             logger.debug("[data_provider] Angel One prev day failed: %s", exc)
         return {}
+
+    def _angel_daily_ohlcv(self, ticker: str, days_back: int = 35) -> tuple:
+        """
+        Fetch daily OHLCV from Angel One and return as a DataFrame.
+        Uses process-wide throttle to stay under 3 req/sec.
+        Returns (DataFrame with lowercase columns, source_str).
+        """
+        try:
+            feed  = _get_angel_feed()
+            token = feed.get_symbol_token(ticker)
+            if not token:
+                return pd.DataFrame(), "no_token"
+            now       = datetime.now(_IST)
+            from_date = (now - timedelta(days=days_back)).strftime("%Y-%m-%d") + " 09:15"
+            to_date   = now.strftime("%Y-%m-%d") + " 15:30"
+
+            candles = _angel_throttled(
+                lambda: feed.get_historical_candles(token, "ONE_DAY", from_date, to_date)
+            )
+            if not candles:
+                return pd.DataFrame(), "angel_no_data"
+
+            rows = []
+            for c in candles:
+                try:
+                    rows.append({
+                        "timestamp": pd.to_datetime(c.get("timestamp", "")),
+                        "open":      float(c.get("open",   0) or 0),
+                        "high":      float(c.get("high",   0) or 0),
+                        "low":       float(c.get("low",    0) or 0),
+                        "close":     float(c.get("close",  0) or 0),
+                        "volume":    int(c.get("volume",   0) or 0),
+                    })
+                except Exception:
+                    pass
+
+            if not rows:
+                return pd.DataFrame(), "angel_parse_error"
+
+            df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+            logger.debug("[data_provider] angel_daily %s: %d rows", ticker, len(df))
+            return df, "angel_one"
+
+        except Exception as exc:
+            logger.debug("[data_provider] Angel One daily failed for %s: %s", ticker, exc)
+            return pd.DataFrame(), "angel_error"
 
     def _yf_intraday(self, ticker: str, interval: str, days_back: int) -> tuple:
         if not _YF_OK:
