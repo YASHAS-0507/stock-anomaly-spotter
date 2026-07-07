@@ -49,7 +49,7 @@ RSI_LOW,  RSI_HIGH  = 40.0, 70.0
 EMA_SPAN            = 21
 SURGE_THRESHOLD     = 1.5        # volume surge multiplier
 TOP_N               = 15
-FETCH_WORKERS       = 8          # parallel download threads
+FETCH_WORKERS       = 4          # parallel download threads (Angel One rate limit)
 DATA_PERIOD         = "1mo"      # 30 days of daily OHLCV
 
 
@@ -134,7 +134,13 @@ class MarketScanner:
 
     def _fetch_all(self, tickers: list[str]) -> dict[str, Optional[pd.DataFrame]]:
         """Fetch OHLCV data for all tickers in parallel via data_pipeline."""
+        import time as _time
         results: dict[str, Optional[pd.DataFrame]] = {}
+
+        # Cold-start delay: Angel One's burst detection window fires before the
+        # per-call throttle gate in data_provider has a chance to serialise the
+        # first wave of requests from all threads launching simultaneously.
+        _time.sleep(2)
 
         def _fetch_one(ticker: str):
             try:

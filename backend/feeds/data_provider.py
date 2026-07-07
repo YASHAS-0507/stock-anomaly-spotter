@@ -46,7 +46,7 @@ _angel_feed_lock = threading.Lock()
 # The scanner runs 8 parallel threads; without this they'd burst all at once.
 _angel_api_lock = threading.Lock()
 _angel_last_call: float = 0.0
-_ANGEL_MIN_INTERVAL = 0.35  # seconds between historical API calls → ~2.8 req/sec max
+_ANGEL_MIN_INTERVAL = 0.50  # seconds between historical API calls → 2 req/sec max
 
 
 def _get_angel_feed():
