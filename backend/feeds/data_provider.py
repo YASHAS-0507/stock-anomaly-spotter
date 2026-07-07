@@ -214,10 +214,8 @@ class DataProvider:
         try:
             yf_interval = "1m" if interval == "ONE_MINUTE" else "5m"
             period_str  = f"{min(days_back, 7)}d"
-            df = yf.download(
-                ticker, period=period_str, interval=yf_interval,
-                progress=False, auto_adjust=True,
-            )
+            ticker_obj  = yf.Ticker(ticker)
+            df = ticker_obj.history(period=period_str, interval=yf_interval, auto_adjust=True)
             if df is None or df.empty:
                 return [], "yfinance_no_data"
             if isinstance(df.columns, pd.MultiIndex):
@@ -247,7 +245,8 @@ class DataProvider:
         if not _YF_OK:
             return {**_empty, "source": "yfinance_unavailable"}
         try:
-            df = yf.download(ticker, period="5d", progress=False, auto_adjust=True)
+            ticker_obj = yf.Ticker(ticker)
+            df = ticker_obj.history(period="5d", auto_adjust=True)
             if df is None or df.empty:
                 return _empty
             if isinstance(df.columns, pd.MultiIndex):
@@ -286,7 +285,8 @@ class DataProvider:
 
         def _fetch_single(sym: str) -> pd.Series:
             try:
-                df = yf.download(sym, period="3d", progress=False, auto_adjust=True)
+                ticker_obj = yf.Ticker(sym)
+                df = ticker_obj.history(period="3d", auto_adjust=True)
                 if df is None or df.empty:
                     return pd.Series(dtype=float)
                 if isinstance(df.columns, pd.MultiIndex):
