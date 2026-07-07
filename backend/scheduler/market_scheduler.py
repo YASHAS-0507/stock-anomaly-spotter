@@ -11,9 +11,13 @@ Pipeline:
   09:15 → Angel One WebSocket open, on_tick() fires per tick
   09:15+→ on_new_candle()    — 5min candle close triggers full decision pipeline
   every 7min → intelligence_refresh()
-  every 1s   → monitor_loop_tick() — SL/TP/time-stop checks
-  15:15 → square_off_3_15pm()
-  15:30 → post_market_3_30pm()
+  every 1s   → monitor_loop_tick() — SL/TP/time-stop checks + IST-aware EOD triggers
+  15:15 → square_off_3_15pm()  (IST-aware, checked in monitor_loop_tick)
+  15:30 → post_market_3_30pm() (IST-aware, checked in monitor_loop_tick)
+
+IMPORTANT: All time comparisons use pytz IST, not datetime.now() bare.
+The schedule library's day.at() uses local time (UTC on Railway); EOD jobs
+are therefore triggered manually via monitor_loop_tick IST checks instead.
 """
 
 import logging
@@ -21,8 +25,10 @@ import os
 import sys
 import time
 import uuid
-from datetime import datetime, date, timezone, timedelta
+from datetime import datetime, date
 from typing import Optional
+
+import pytz
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -61,7 +67,7 @@ except ImportError:
     _SCHEDULE_OK = False
     schedule = None  # type: ignore
 
-IST = timezone(timedelta(hours=5, minutes=30))
+_IST = pytz.timezone("Asia/Kolkata")
 
 # NSE holidays 2026 (minimum required)
 _NSE_HOLIDAYS_2026 = {
@@ -99,6 +105,10 @@ class MarketScheduler:
         self._feed: Optional[AngelOneFeed] = None
         self._angel_connected: bool = False
 
+        # IST-aware EOD job flags — prevents double-firing
+        self._squared_off:      bool = False
+        self._post_market_done: bool = False
+
         # Component instances
         self.candle_builder  = CandleBuilder()
         self.features_engine = IntradayFeatures()
@@ -118,8 +128,8 @@ class MarketScheduler:
     # ──────────────────────────────────────────────────────
 
     def is_trading_day(self, date_obj: Optional[date] = None) -> bool:
-        """Return True if the given date is a valid NSE trading day."""
-        d = date_obj or datetime.now(IST).date()
+        """Return True if the given date is a valid NSE trading day (IST date)."""
+        d = date_obj or datetime.now(_IST).date()
         if d.weekday() >= 5:          # Saturday=5, Sunday=6
             return False
         if d in _NSE_HOLIDAYS_2026:
@@ -152,7 +162,7 @@ class MarketScheduler:
         if not checks["broker_not_emergency_stopped"]:
             warnings.append("CRITICAL: broker is emergency-stopped — call auto_broker.reset()")
 
-        ready = checks["broker_not_emergency_stopped"]  # only hard requirement
+        ready = checks["broker_not_emergency_stopped"]
         return {"ready": ready, "checks": checks, "warnings": warnings}
 
     # ──────────────────────────────────────────────────────
@@ -160,27 +170,18 @@ class MarketScheduler:
     # ──────────────────────────────────────────────────────
 
     def apply_morning_bias(self, morning_bias: str) -> None:
-        """Adjust day_min_score and day_size_multiplier based on macro morning bias."""
         if morning_bias == "STRONG_BEAR":
-            self.day_min_score       = 75
-            self.day_size_multiplier = 0.5
-            logger.info("[scheduler] STRONG_BEAR day: min_score=75, size=0.5x")
+            self.day_min_score = 75; self.day_size_multiplier = 0.5
         elif morning_bias == "BEAR":
-            self.day_min_score       = 70
-            self.day_size_multiplier = 0.7
-            logger.info("[scheduler] BEAR day: min_score=70, size=0.7x")
+            self.day_min_score = 70; self.day_size_multiplier = 0.7
         elif morning_bias == "NEUTRAL":
-            self.day_min_score       = 65
-            self.day_size_multiplier = 1.0
-            logger.info("[scheduler] NEUTRAL day: normal settings")
+            self.day_min_score = 65; self.day_size_multiplier = 1.0
         elif morning_bias == "BULL":
-            self.day_min_score       = 62
-            self.day_size_multiplier = 1.0
-            logger.info("[scheduler] BULL day: min_score=62")
+            self.day_min_score = 62; self.day_size_multiplier = 1.0
         elif morning_bias == "STRONG_BULL":
-            self.day_min_score       = 60
-            self.day_size_multiplier = 1.0
-            logger.info("[scheduler] STRONG_BULL day: min_score=60")
+            self.day_min_score = 60; self.day_size_multiplier = 1.0
+        logger.info("[scheduler] Morning bias=%s min_score=%d size=%.1fx",
+                    morning_bias, self.day_min_score, self.day_size_multiplier)
 
     def pre_market_8am(self) -> None:
         """Run at 08:00 IST: VIX check, model load, initial mood."""
@@ -203,7 +204,6 @@ class MarketScheduler:
             morning_bias = mood.get("morning_bias", "NEUTRAL")
             self.apply_morning_bias(morning_bias)
 
-            # Get expiry context for today
             self.expiry_context = expiry_calendar.get_expiry_context()
             self.day_expiry_risk_mult = self.expiry_context["risk_multiplier"]
             self.day_max_trades       = self.expiry_context["max_trades_today"]
@@ -213,11 +213,7 @@ class MarketScheduler:
                 loss_mult = self.expiry_context["daily_loss_multiplier"]
                 auto_broker.max_daily_loss    *= loss_mult
                 auto_broker.emergency_stop_loss *= loss_mult
-                print(
-                    f"[expiry] {self.expiry_context['expiry_type']} "
-                    f"day: risk={self.day_expiry_risk_mult}x "
-                    f"max_trades={self.day_max_trades}"
-                )
+                print(f"[expiry] {self.expiry_context['expiry_type']} day: risk={self.day_expiry_risk_mult}x max_trades={self.day_max_trades}")
 
             if vix > 25.0:
                 self.skip_today = True
@@ -228,7 +224,6 @@ class MarketScheduler:
         except Exception as exc:
             logger.warning("[scheduler] Mood fetch failed: %s", exc)
 
-        # Try to load saved model
         if not intraday_model.is_trained():
             loaded = intraday_model.load()
             if loaded:
@@ -261,7 +256,7 @@ class MarketScheduler:
             mood      = self.market_mood_cache or self.mood.get_mood()
             analysis  = self.llm.analyze_batch(self.watchlist, news, mood)
             self.intelligence_cache = analysis
-            self.last_intelligence_refresh = datetime.now(IST)
+            self.last_intelligence_refresh = datetime.now(_IST)
             logger.info("[scheduler] Intelligence refreshed for %d tickers", len(analysis))
         except Exception as exc:
             logger.warning("[scheduler] Intelligence scan failed: %s", exc)
@@ -269,6 +264,16 @@ class MarketScheduler:
     def intelligence_refresh(self) -> None:
         """Re-run intelligence_scan (called every 7 min by scheduler)."""
         self.intelligence_scan()
+
+    # ──────────────────────────────────────────────────────
+    # Angel One disconnect callback
+    # ──────────────────────────────────────────────────────
+
+    def _on_angel_disconnect(self) -> None:
+        """Fired by AngelOneFeed._handle_close() on unexpected WebSocket close."""
+        self._angel_connected = False
+        logger.warning("[scheduler] Angel One WebSocket disconnected — historical fallback activated")
+        print("[scheduler] Angel One disconnected — historical fallback will run every 5min")
 
     # ──────────────────────────────────────────────────────
     # Tick + candle pipeline
@@ -286,6 +291,14 @@ class MarketScheduler:
             if ticker in self.watchlist:
                 self.current_prices[ticker] = price
             self.candle_builder.on_tick(ticker, price, volume, timestamp)
+
+            # Push price to WebSocket manager for real-time frontend updates
+            try:
+                from services.websocket_manager import websocket_manager
+                websocket_manager.update_price(ticker, price)
+            except Exception:
+                pass
+
         except Exception as exc:
             logger.debug("[scheduler] on_tick error for %s: %s", ticker, exc)
 
@@ -311,7 +324,7 @@ class MarketScheduler:
 
     def _process_candle(self, ticker: str, candle: dict) -> None:
         """Core decision pipeline for one completed 5-min candle."""
-        now = datetime.now(IST)
+        now = datetime.now(_IST)
 
         # Gate: only trade in active windows (9:30–14:45 IST)
         now_mins = now.hour * 60 + now.minute
@@ -324,12 +337,10 @@ class MarketScheduler:
             logger.info("[scheduler] Daily limits exceeded: %s", limits["reason"])
             return
 
-        # Gate: skip_today flag (extreme VIX)
         if self.skip_today:
             return
 
-        # Gate: expiry day trade count limit
-        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        today_str = datetime.now(_IST).strftime("%Y-%m-%d")
         trades_today = len([
             t for t in auto_broker.trades
             if t.get("opened_at", "").startswith(today_str)
@@ -337,12 +348,10 @@ class MarketScheduler:
         if trades_today >= self.day_max_trades:
             return
 
-        # Gate: expiry day time cutoff
-        current_time_str = datetime.now(IST).strftime("%H:%M")
+        current_time_str = datetime.now(_IST).strftime("%H:%M")
         if current_time_str >= self.day_avoid_after:
             return
 
-        # Fetch candle history
         candles_5min = self.candle_builder.get_candles(ticker, "5min", 60)
         candles_1min = self.candle_builder.get_candles(ticker, "1min", 200)
 
@@ -352,28 +361,23 @@ class MarketScheduler:
         if current_price <= 0:
             return
 
-        # Compute features
         features = self.features_engine.compute(candles_5min, candles_1min, current_price)
 
-        # Detect regime
         mood   = self.market_mood_cache or {"vix": 15.0, "vix_regime": "NORMAL"}
         regime = self.regime_detector.detect(features, mood, now)
 
         if not regime.get("trading_permitted", False):
             return
 
-        # ML prediction
         ml_pred = intraday_model.predict(features)
 
-        # Intelligence (cached)
         intel = self.intelligence_cache.get(ticker, {
             "action": "NORMAL", "intelligence_score": 50,
             "sentiment": "NEUTRAL", "source": "cache_miss",
         })
 
-        # Generate signal
         open_count = len(auto_broker.positions)
-        trade_id   = f"TRD-{ticker.split('.')[0]}-{datetime.now(IST).strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
+        trade_id   = f"TRD-{ticker.split('.')[0]}-{datetime.now(_IST).strftime('%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
         DECISION_CONFIG["min_combined_score"] = self.day_min_score
         signal = intraday_decision_engine.generate_signal(
@@ -385,7 +389,12 @@ class MarketScheduler:
             open_positions=open_count,
         )
 
-        # Shadow agents observe regardless of signal
+        logger.info(
+            "[decision] %s → signal=%s score=%.1f prob_up=%.2f regime=%s intel=%s",
+            ticker, signal.get("signal", "?"), signal.get("combined_score", 0.0),
+            ml_pred.get("prob_up", 0.5), regime.get("regime", "?"), intel.get("action", "?"),
+        )
+
         try:
             shadow_manager.observe(
                 ticker=ticker,
@@ -402,15 +411,12 @@ class MarketScheduler:
         if signal["signal"] != "BUY":
             return
 
-        # ATR-based stop loss: close - 1.5 × ATR
         atr = features.get("atr_14", 0.0) or 0.0
         stop_loss = current_price - (atr * 1.5) if atr > 0 else current_price * 0.98
 
-        # Decay multiplier: AT_RISK setups trade at 50% size
         setup_multipliers = decay_monitor.get_setup_risk_multipliers()
         decay_mult = setup_multipliers.get(signal.get("setup_type", ""), 1.0)
 
-        # Size the position
         sizing = self.sizer.calculate(
             entry_price=current_price,
             stop_loss=stop_loss,
@@ -422,11 +428,9 @@ class MarketScheduler:
             logger.info("[scheduler] %s sizing not viable: %s", ticker, sizing.get("reason"))
             return
 
-        # Inject trade_id and ticker into signal for broker
         signal["ticker"]   = ticker
         signal["trade_id"] = trade_id
 
-        # Execute
         order = auto_broker.execute_signal(signal, current_price, sizing)
         if order.get("status") == "filled":
             logger.info(
@@ -442,8 +446,29 @@ class MarketScheduler:
     # ──────────────────────────────────────────────────────
 
     def monitor_loop_tick(self) -> None:
-        """Called every second — check SL/TP on all open positions."""
+        """
+        Called every second.
+        1. Checks SL/TP on all open positions.
+        2. Fires IST-aware EOD jobs (square-off at 15:15, post-market at 15:30).
+           These are triggered here instead of schedule.every().day.at() because
+           the schedule library uses local system time (UTC on Railway).
+        """
         try:
+            now_ist  = datetime.now(_IST)
+            now_mins = now_ist.hour * 60 + now_ist.minute
+
+            # IST-aware square-off at 15:15
+            if now_mins >= 15 * 60 + 15 and not self._squared_off:
+                self._squared_off = True
+                logger.info("[scheduler] 15:15 IST — triggering square-off")
+                self.square_off_3_15pm()
+
+            # IST-aware post-market at 15:30
+            if now_mins >= 15 * 60 + 30 and not self._post_market_done:
+                self._post_market_done = True
+                logger.info("[scheduler] 15:30 IST — triggering post-market")
+                self.post_market_3_30pm()
+
             if not self.current_prices:
                 return
             closed = auto_broker.monitor_positions(self.current_prices)
@@ -504,7 +529,6 @@ class MarketScheduler:
             logger.info("[scheduler] Shadow report recommendation: %s",
                         report.get("recommendation", "N/A"))
 
-            # Run decay monitor if due
             all_trades = auto_broker.get_trade_history(limit=500)
             ran = decay_monitor.run_if_due(all_trades)
             if ran:
@@ -526,10 +550,13 @@ class MarketScheduler:
         Background thread: when Angel One WebSocket is offline, fetches the
         latest 5-min candle from the historical API every 5 minutes and feeds
         it into on_new_candle() so the decision engine keeps running.
+
+        Adds a 0.4s delay between tickers to respect Angel One's rate limit
+        of 3 historical API requests per second.
         """
         while self.running:
             try:
-                now = datetime.now(IST)
+                now = datetime.now(_IST)
                 time_str = f"{now.hour:02d}:{now.minute:02d}"
 
                 in_window1 = "09:30" <= time_str <= "11:30"
@@ -551,6 +578,7 @@ class MarketScheduler:
                                 self.on_new_candle(ticker, "5min", latest)
                         except Exception as exc:
                             print(f"[fallback] {ticker}: {exc}")
+                        time.sleep(0.4)  # 3 req/sec rate-limit headroom
 
             except Exception as exc:
                 print(f"[fallback] loop error: {exc}")
@@ -566,14 +594,25 @@ class MarketScheduler:
         Main entry point. Checks trading day, runs pre-market jobs,
         connects Angel One feed, then loops until post_market completes.
         """
+        # ── Startup timezone verification log ──
+        from datetime import timezone as _tz
+        utcnow   = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_ist  = datetime.now(_IST)
+        now_ist_str = now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+        now_mins = now_ist.hour * 60 + now_ist.minute
+        is_open  = self.is_trading_day(now_ist.date()) and (9 * 60 + 15) <= now_mins <= (15 * 60 + 30)
+        print(f"[timezone_check] UTC={utcnow} IST={now_ist_str} market_open={is_open}")
+        logger.info("[timezone_check] UTC=%s IST=%s market_open=%s", utcnow, now_ist_str, is_open)
+
         if not self.is_trading_day():
             logger.info("[scheduler] Today is not a trading day — exiting")
             return
 
         logger.info("[scheduler] ========= MARKET SCHEDULER STARTING =========")
         self.running = True
+        self._squared_off      = False
+        self._post_market_done = False
 
-        # Run initial jobs
         self.pre_market_8am()
         if self.skip_today:
             logger.info("[scheduler] VIX too high — skipping today")
@@ -582,26 +621,22 @@ class MarketScheduler:
         self.scanner_run_8am()
         self.intelligence_scan()
 
-        # Connect Angel One feed
+        # Connect Angel One feed (connect_websocket() handles auth internally)
         try:
-            self._feed = AngelOneFeed(on_tick_callback=self.on_tick)
-            authenticated = self._feed.authenticate()
-            if authenticated:
-                tokens = [
-                    v for k, v in NIFTY_50_TOKENS.items()
-                    if k in self.watchlist
-                ]
-                self._feed.connect_websocket()
-                time.sleep(2)
-                self._feed.subscribe(tokens)
-                self._angel_connected = True
-                logger.info("[scheduler] Angel One feed connected, %d tokens subscribed", len(tokens))
-            else:
-                self._angel_connected = False
-                logger.warning("[scheduler] Angel One auth failed — running without live feed")
+            self._feed = AngelOneFeed(
+                on_tick_callback=self.on_tick,
+                on_disconnect_callback=self._on_angel_disconnect,
+            )
+            self._feed.connect_websocket()
+            # Subscribe to tokens for all watchlist tickers AFTER connection opens
+            tokens = [v for k, v in NIFTY_50_TOKENS.items() if k in self.watchlist]
+            time.sleep(2)  # let on_open fire before subscribing
+            self._feed.subscribe(tokens)
+            self._angel_connected = True
+            logger.info("[scheduler] Angel One feed connected, %d tokens subscribed", len(tokens))
         except Exception as exc:
             self._angel_connected = False
-            logger.warning("[scheduler] Feed connection failed: %s — continuing", exc)
+            logger.warning("[scheduler] Feed connection failed: %s — running on historical fallback", exc)
 
         # Start historical fallback loop (fires every 5 min when Angel One is offline)
         import threading as _threading
@@ -613,13 +648,11 @@ class MarketScheduler:
         fallback_thread.start()
         logger.info("[scheduler] Historical fallback thread started")
 
-        # Set up schedule jobs
+        # Set up recurring schedule jobs (interval-based only — day.at() would use UTC)
         if _SCHEDULE_OK:
             schedule.every(7).minutes.do(self.intelligence_refresh)
             schedule.every(1).seconds.do(self.monitor_loop_tick)
-            schedule.every().day.at("15:15").do(self.square_off_3_15pm)
-            schedule.every().day.at("15:30").do(self.post_market_3_30pm)
-            logger.info("[scheduler] Schedule jobs registered")
+            logger.info("[scheduler] Schedule jobs registered (EOD jobs handled via IST check in monitor_loop_tick)")
 
         # Main loop
         logger.info("[scheduler] Entering main loop…")
@@ -639,7 +672,6 @@ class MarketScheduler:
         logger.info("[scheduler] === STOP ===")
         self.running = False
 
-        # Square off any open positions
         try:
             if auto_broker.positions:
                 logger.info("[scheduler] Squaring off %d open positions", len(auto_broker.positions))
@@ -647,7 +679,6 @@ class MarketScheduler:
         except Exception as exc:
             logger.warning("[scheduler] Stop square-off failed: %s", exc)
 
-        # Disconnect feed
         try:
             if self._feed:
                 self._feed.disconnect()
@@ -657,6 +688,8 @@ class MarketScheduler:
 
         logger.info("[scheduler] ========= SHUTDOWN COMPLETE =========")
 
+
+import uuid  # noqa: E402 — used in _process_candle above
 
 # Module-level singleton
 market_scheduler = MarketScheduler()

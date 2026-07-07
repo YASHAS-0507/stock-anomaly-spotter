@@ -10,10 +10,12 @@ unit tests with synthetic timestamps are deterministic regardless of wall-clock 
 
 import threading
 from collections import defaultdict, deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Callable, Optional
 
-IST = timezone(timedelta(hours=5, minutes=30))
+import pytz
+
+IST = pytz.timezone("Asia/Kolkata")
 MAX_CANDLES = 200
 
 TIMEFRAME_SECONDS = {

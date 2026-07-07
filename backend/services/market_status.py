@@ -14,9 +14,11 @@ Provides real-time market status information including:
 
 import logging
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from dataclasses import dataclass, asdict
+
+import pytz
 
 from services.market_data import market_data_manager, Interval
 from services.redis_manager import redis_manager
@@ -62,8 +64,7 @@ class MarketStatusService:
         self.exchange = exchange
         self.market_open = (market_open_hour, market_open_minute)
         self.market_close = (market_close_hour, market_close_minute)
-        self.tz_offset = timedelta(hours=timezone_offset_hours, minutes=timezone_offset_minutes)
-        self.tz = timezone(self.tz_offset)
+        self.tz = pytz.timezone("Asia/Kolkata")
         
         # Feed status tracking
         self._feed_status = "DISCONNECTED"

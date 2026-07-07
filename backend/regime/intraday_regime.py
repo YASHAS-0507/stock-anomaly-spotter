@@ -13,12 +13,14 @@ Phase 1: no short-selling → TRENDING_DOWN has trading_permitted=False.
 """
 
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 # ── Regime catalogue ──────────────────────────────────────────────────────────
 # Each entry: (trading_permitted, size_multiplier)

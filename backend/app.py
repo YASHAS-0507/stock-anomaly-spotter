@@ -83,9 +83,19 @@ app = FastAPI(title="Stock Anomaly Spotter API")
 @app.on_event("startup")
 def startup_event():
     """
-    Warms up the ML engine by processing the raw data into the 
+    Warms up the ML engine by processing the raw data into the
     required feature format before training.
     """
+    import pytz as _pytz
+    from datetime import datetime, timezone as _tz
+    _IST_tz = _pytz.timezone("Asia/Kolkata")
+    _utcnow = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    _now_ist = datetime.now(_IST_tz)
+    _now_ist_str = _now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
+    _mins = _now_ist.hour * 60 + _now_ist.minute
+    _is_open = (9 * 60 + 15) <= _mins <= (15 * 60 + 30) and _now_ist.weekday() < 5
+    print(f"[timezone_check] UTC={_utcnow} IST={_now_ist_str} market_open={_is_open}")
+
     from data_pipeline import get_price_data
     from features import build_feature_table # Ensure this is imported
     
@@ -604,7 +614,7 @@ def get_decision(
 
     except Exception as exc:
         from datetime import datetime, timezone, timedelta
-        ts = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%H:%M:%S IST")
+        import pytz as _pytz; ts = datetime.now(_pytz.timezone("Asia/Kolkata")).strftime("%H:%M:%S IST")
         return {
             "decision":          "BLOCKED",
             "signal":            "BLOCKED",
@@ -896,8 +906,9 @@ def emergency_stop_scheduler():
 def scheduler_status():
     """Return full scheduler and broker status."""
     try:
-        from datetime import datetime, timezone, timedelta
-        _IST = timezone(timedelta(hours=5, minutes=30))
+        import pytz as _pytz
+        from datetime import datetime
+        _IST = _pytz.timezone("Asia/Kolkata")
         now = datetime.now(_IST)
         now_mins = now.hour * 60 + now.minute
         market_open = (
@@ -1066,8 +1077,9 @@ def expiry_today():
 @app.get("/api/health/full")
 def full_health_check():
     """Return complete system health for deployment readiness checks."""
-    from datetime import datetime, timezone, timedelta
-    _IST = timezone(timedelta(hours=5, minutes=30))
+    import pytz as _pytz
+    from datetime import datetime
+    _IST = _pytz.timezone("Asia/Kolkata")
     ts = datetime.now(_IST).strftime("%Y-%m-%d %H:%M:%S IST")
 
     checks: Dict[str, str] = {}

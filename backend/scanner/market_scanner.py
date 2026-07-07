@@ -23,11 +23,12 @@ import logging
 import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+import pytz
 
 # Resolve backend root so data_pipeline is importable regardless of cwd
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,7 +40,7 @@ from feeds.ticker_registry import NIFTY_50_TOKENS, get_sector
 
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 # Scoring parameters
 LIQUIDITY_THRESHOLD = 1_000_000  # 10 lakh shares
