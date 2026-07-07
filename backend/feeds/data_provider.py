@@ -14,6 +14,7 @@ import os
 import sys
 import time
 import logging
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -35,6 +36,24 @@ except ImportError:
 IST = timezone(timedelta(hours=5, minutes=30))
 
 _MACRO_TICKERS = ["^INDIAVIX", "USDINR=X", "CL=F", "^GSPC", "^N225"]
+
+# ── Angel One singleton ───────────────────────────────────────────────────────
+# Reuse a single AngelOneFeed instance across all _angel_* calls so that the
+# module-level session cache in angel_feed.py is actually shared — creating a
+# fresh AngelOneFeed() per ticker bypasses the cache and causes a TOTP login
+# per ticker, which hits Angel One's rate limiter after ~4-5 rapid calls.
+_angel_feed_singleton = None
+_angel_feed_lock = threading.Lock()
+
+
+def _get_angel_feed():
+    global _angel_feed_singleton
+    if _angel_feed_singleton is None:
+        with _angel_feed_lock:
+            if _angel_feed_singleton is None:
+                from feeds.angel_feed import AngelOneFeed
+                _angel_feed_singleton = AngelOneFeed()
+    return _angel_feed_singleton
 
 
 class DataProvider:
@@ -164,8 +183,7 @@ class DataProvider:
 
     def _angel_intraday(self, ticker: str, interval: str, days_back: int) -> tuple:
         try:
-            from feeds.angel_feed import AngelOneFeed
-            feed = AngelOneFeed()
+            feed  = _get_angel_feed()
             token = feed.get_symbol_token(ticker)
             if not token:
                 return [], "no_token"
@@ -173,6 +191,7 @@ class DataProvider:
             warmup = feed.get_warmup_candles(token, days_back=days_back)
             candles = warmup.get(key, [])
             if candles:
+                logger.debug("[data_provider] angel_intraday %s: %d candles", ticker, len(candles))
                 return candles, "angel_one"
         except Exception as exc:
             logger.debug("[data_provider] Angel One intraday failed: %s", exc)
@@ -180,8 +199,7 @@ class DataProvider:
 
     def _angel_prev_day(self, ticker: str) -> dict:
         try:
-            from feeds.angel_feed import AngelOneFeed
-            feed = AngelOneFeed()
+            feed  = _get_angel_feed()
             token = feed.get_symbol_token(ticker)
             if not token:
                 return {}
@@ -209,6 +227,9 @@ class DataProvider:
     # ──────────────────────────────────────────────────────────────────
 
     def _yf_intraday(self, ticker: str, interval: str, days_back: int) -> tuple:
+        # NOTE: Railway's IP range is frequently hard-blocked by Yahoo Finance for
+        # .NS tickers. If this returns empty consistently, it is an IP-level block,
+        # not a symbol or code issue. Angel One is the reliable source for intraday.
         if not _YF_OK:
             return [], "yfinance_unavailable"
         try:

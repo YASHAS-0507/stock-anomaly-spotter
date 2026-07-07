@@ -56,6 +56,29 @@ _MODE_LTP = 1
 # Backoff schedule in seconds
 _BACKOFF = [5, 10, 30]
 
+# ── Module-level session cache ─────────────────────────────────────────────────
+# Angel One JWTs last until IST midnight. We cache for 6 hours conservatively.
+# This prevents a fresh TOTP login on every per-ticker data_provider call.
+_TOKEN_TTL = 21600  # 6 hours in seconds
+
+
+class _AngelSession:
+    """Shared session state — one real TOTP login per _TOKEN_TTL window."""
+    _lock = threading.Lock()
+    api        = None
+    auth_token: str   = ""
+    feed_token: str   = ""
+    expiry:     float = 0.0
+
+    @classmethod
+    def is_valid(cls) -> bool:
+        return bool(cls.auth_token) and time.time() < cls.expiry
+
+    @classmethod
+    def invalidate(cls) -> None:
+        """Force re-auth on next authenticate() call (e.g. after an API 401)."""
+        cls.expiry = 0.0
+
 
 class AngelOneFeed:
     """
@@ -63,7 +86,7 @@ class AngelOneFeed:
     authenticate → connect WebSocket → subscribe → receive ticks → reconnect.
     """
 
-    def __init__(self, on_tick_callback=None):
+    def __init__(self, on_tick_callback=None, on_disconnect_callback=None):
         """
         Parameters
         ----------
@@ -71,6 +94,9 @@ class AngelOneFeed:
             Called for every tick with signature:
             callback(ticker: str, price: float, volume: int, timestamp: float)
             Defaults to the shared candle_builder singleton.
+        on_disconnect_callback : callable, optional
+            Called with no arguments when the WebSocket closes unexpectedly.
+            Used by the scheduler to reset its _angel_connected flag.
         """
         self._api_key    = os.environ.get("ANGEL_API_KEY", "")
         self._client_id  = os.environ.get("ANGEL_CLIENT_ID", "")
@@ -88,6 +114,8 @@ class AngelOneFeed:
         self._ws_thread:  Optional[threading.Thread] = None
         self._reconnect_attempt: int = 0
 
+        self._on_disconnect_cb = on_disconnect_callback
+
         # Default tick callback → shared CandleBuilder singleton
         if on_tick_callback is not None:
             self._on_tick_cb = on_tick_callback
@@ -104,54 +132,89 @@ class AngelOneFeed:
 
     def authenticate(self) -> bool:
         """
-        Generate a TOTP code and authenticate with Angel One SmartAPI.
-        Stores auth_token and feed_token for WebSocket use.
+        Authenticate with Angel One SmartAPI, reusing a cached JWT when valid.
+
+        A module-level _AngelSession caches the JWT for _TOKEN_TTL seconds (6h).
+        Only one real TOTP login happens per TTL window regardless of how many
+        AngelOneFeed instances or concurrent threads call this method.
 
         Returns True on success, False on failure.
         """
         self._require_deps()
         self._require_credentials()
 
-        from datetime import datetime as _dt
-        print(f"[angel] Starting authentication...")
-        print(f"[angel] Client ID: {self._client_id[:4]}...")
-        logger.info("[angel_feed] Authenticating client %s…", self._client_id)
-
-        try:
-            totp_code = pyotp.TOTP(self._totp_secret).now()
-            print(f"[angel] TOTP code: {totp_code}")
-            print(f"[angel] Current time: {_dt.now()}")
-        except Exception as exc:
-            print(f"[angel] TOTP generation failed: {exc}")
-            logger.error("[angel_feed] TOTP generation failed: %s", exc)
-            return False
-
-        try:
-            self._api = SmartConnect(api_key=self._api_key)
-            data = self._api.generateSession(
-                clientCode=self._client_id,
-                password=self._password,
-                totp=totp_code,
-            )
-
-            if not data or not data.get("status"):
-                print(f"[angel] generateSession failed: {data}")
-                logger.error("[angel_feed] generateSession failed: %s", data)
-                return False
-
-            self.auth_token = data["data"]["jwtToken"]
-            self.feed_token = self._api.getfeedToken()
-
-            print(f"[angel] Auth result: {self.auth_token[:10]}...")
-            print(f"[angel] Feed token: {self.feed_token[:10]}...")
-            logger.info("[angel_feed] Authenticated: Client ID %s", self._client_id)
-            self._reconnect_attempt = 0
+        # ── Fast path: reuse cached session ───────────────────────────────
+        if _AngelSession.is_valid():
+            self.auth_token = _AngelSession.auth_token
+            self.feed_token = _AngelSession.feed_token
+            self._api       = _AngelSession.api
+            remaining = int(_AngelSession.expiry - time.time())
+            logger.debug("[angel_feed] Reusing cached session (%ds remaining)", remaining)
+            print(f"[angel] Reusing cached session ({remaining}s remaining)")
             return True
 
-        except Exception as exc:
-            print(f"[angel] Authentication error: {exc}")
-            logger.error("[angel_feed] Authentication error: %s", exc)
-            return False
+        # ── Slow path: acquire lock, re-check, then real TOTP login ───────
+        with _AngelSession._lock:
+            if _AngelSession.is_valid():  # another thread refreshed while we waited
+                self.auth_token = _AngelSession.auth_token
+                self.feed_token = _AngelSession.feed_token
+                self._api       = _AngelSession.api
+                print("[angel] Session refreshed by peer thread — reusing")
+                return True
+
+            from datetime import datetime as _dt
+            print("[angel] Starting fresh authentication (no valid cached session)...")
+            print(f"[angel] Client ID: {self._client_id[:4]}...")
+            logger.info("[angel_feed] Authenticating client %s…", self._client_id)
+
+            try:
+                totp_code = pyotp.TOTP(self._totp_secret).now()
+                print(f"[angel] TOTP code: {totp_code}")
+                print(f"[angel] Current time: {_dt.now()}")
+            except Exception as exc:
+                print(f"[angel] TOTP generation failed: {exc}")
+                logger.error("[angel_feed] TOTP generation failed: %s", exc)
+                return False
+
+            try:
+                api  = SmartConnect(api_key=self._api_key)
+                data = api.generateSession(
+                    clientCode=self._client_id,
+                    password=self._password,
+                    totp=totp_code,
+                )
+
+                if not data or not data.get("status"):
+                    print(f"[angel] generateSession failed: {data}")
+                    logger.error("[angel_feed] generateSession failed: %s", data)
+                    return False
+
+                auth_token = data["data"]["jwtToken"]
+                feed_token = api.getfeedToken()
+
+                # Populate shared cache
+                _AngelSession.api        = api
+                _AngelSession.auth_token = auth_token
+                _AngelSession.feed_token = feed_token
+                _AngelSession.expiry     = time.time() + _TOKEN_TTL
+
+                self._api        = api
+                self.auth_token  = auth_token
+                self.feed_token  = feed_token
+
+                print(f"[angel] Auth result: {self.auth_token[:10]}...")
+                print(f"[angel] Feed token: {self.feed_token[:10]}...")
+                logger.info(
+                    "[angel_feed] Fresh auth complete: client %s, session valid %dh",
+                    self._client_id, _TOKEN_TTL // 3600,
+                )
+                self._reconnect_attempt = 0
+                return True
+
+            except Exception as exc:
+                print(f"[angel] Authentication error: {exc}")
+                logger.error("[angel_feed] Authentication error: %s", exc)
+                return False
 
     def connect_websocket(self) -> None:
         """
@@ -217,10 +280,8 @@ class AngelOneFeed:
         if self._stop_event.is_set():
             return
 
-        # Re-authenticate to get a fresh token, then re-connect
-        ok = self.authenticate()
-        if ok:
-            self.connect_websocket()
+        # connect_websocket() authenticates internally (cache hit if token still valid)
+        self.connect_websocket()
 
     def disconnect(self) -> None:
         """Clean shutdown — stops reconnect attempts and closes the WebSocket."""
@@ -302,6 +363,11 @@ class AngelOneFeed:
         reason = str(args[1]) if len(args) >= 2 and args[1] else (str(args[0]) if args else "unknown")
         print(f"[angel] WebSocket on_close: {reason}")
         logger.warning("[angel_feed] WebSocket closed — reason: %s", reason)
+        if self._on_disconnect_cb:
+            try:
+                self._on_disconnect_cb()
+            except Exception:
+                pass
         if not self._stop_event.is_set():
             time.sleep(5)
             self.reconnect()
@@ -409,6 +475,11 @@ class AngelOneFeed:
 
             if not response or not response.get("status"):
                 print(f"[angel_feed] getCandleData error: {response}")
+                # If the error looks like an auth expiry, invalidate the session cache
+                err_msg = str(response).lower() if response else ""
+                if "unauthori" in err_msg or "token" in err_msg or "access" in err_msg:
+                    _AngelSession.invalidate()
+                    logger.warning("[angel_feed] Auth error detected — session cache invalidated")
                 return []
 
             rows = response.get("data") or []
