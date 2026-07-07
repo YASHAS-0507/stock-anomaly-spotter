@@ -86,16 +86,25 @@ def startup_event():
     Warms up the ML engine by processing the raw data into the
     required feature format before training.
     """
-    import pytz as _pytz
-    from datetime import datetime, timezone as _tz
-    _IST_tz = _pytz.timezone("Asia/Kolkata")
-    _utcnow = datetime.now(_tz.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    _now_ist = datetime.now(_IST_tz)
-    _now_ist_str = _now_ist.strftime("%Y-%m-%d %H:%M:%S IST")
-    _mins = _now_ist.hour * 60 + _now_ist.minute
-    _is_open = (9 * 60 + 15) <= _mins <= (15 * 60 + 30) and _now_ist.weekday() < 5
-    print(f"[timezone_check] UTC={_utcnow} IST={_now_ist_str} market_open={_is_open}")
-    import sys as _sys; _sys.stdout.flush()
+    import datetime as _dt, pytz as _pytz, sys as _sys
+
+    _IST = _pytz.timezone("Asia/Kolkata")
+    _utc_now  = _dt.datetime.now(_pytz.utc)
+    _ist_now  = _dt.datetime.now(_IST)
+    _server_tz = _dt.datetime.now().astimezone().tzname()
+    _mins     = _ist_now.hour * 60 + _ist_now.minute
+
+    def is_market_open() -> bool:
+        return (9 * 60 + 15) <= _mins <= (15 * 60 + 30) and _ist_now.weekday() < 5
+
+    print("=" * 60)
+    print(f"[TZ_AUDIT] Server clock TZ   : {_server_tz}")
+    print(f"[TZ_AUDIT] Server UTC time   : {_utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"[TZ_AUDIT] Converted IST time: {_ist_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"[TZ_AUDIT] Offset UTC→IST    : +5:30 (Asia/Kolkata)")
+    print(f"[TZ_AUDIT] Market open now   : {is_market_open()}")
+    print("=" * 60)
+    _sys.stdout.flush()
 
     try:
         from data_pipeline import get_price_data
