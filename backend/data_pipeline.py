@@ -42,14 +42,15 @@ def fetch_real_data(ticker: str, total_bars: int) -> pd.DataFrame:
     # 1 trading day ≈ 1.4 calendar days (accounting for weekends/holidays)
     approx_calendar_days = int(total_bars * 1.5)
     end_date = dt.date.today()
-    # Safety: ensure end_date is not in the future
-    if end_date > dt.date.today():
-        end_date = dt.date.today()
-    start_date = (end_date - dt.timedelta(days=approx_calendar_days)).strftime("%Y-%m-%d")
-    end_date_str = end_date.strftime("%Y-%m-%d")
+    start_date    = (end_date - dt.timedelta(days=approx_calendar_days)).strftime("%Y-%m-%d")
+    end_date_str  = end_date.strftime("%Y-%m-%d")
 
-    df = yf.download(ticker, start=start_date, end=end_date_str, progress=False, auto_adjust=True)
-    if df.empty:
+    # Use Ticker.history() instead of yf.download() to avoid 401 Invalid Crumb errors.
+    # NOTE: Railway's egress IP is frequently blocked by Yahoo Finance for .NS tickers;
+    # the synthetic fallback below will activate silently in that case.
+    ticker_obj = yf.Ticker(ticker)
+    df = ticker_obj.history(start=start_date, end=end_date_str, auto_adjust=True)
+    if df is None or df.empty:
         raise ValueError(f"No data returned for ticker '{ticker}'")
 
     # Flatten newer yfinance MultiIndex column schemas if present
@@ -57,12 +58,14 @@ def fetch_real_data(ticker: str, total_bars: int) -> pd.DataFrame:
         df.columns = df.columns.get_level_values(0)
 
     df = df.reset_index()
+    # Ticker.history() names the index "Date" or "Datetime" depending on version
+    date_col = "Date" if "Date" in df.columns else "Datetime"
     df = df.rename(columns={
-        "Date": "date",
-        "Open": "open",
-        "High": "high",
-        "Low": "low",
-        "Close": "close",
+        date_col: "date",
+        "Open":   "open",
+        "High":   "high",
+        "Low":    "low",
+        "Close":  "close",
         "Volume": "volume",
     })
 

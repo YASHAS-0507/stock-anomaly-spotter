@@ -304,6 +304,9 @@ class MarketScheduler:
         if ticker not in self.watchlist:
             return
 
+        logger.debug("[scheduler] on_new_candle: %s close=%.2f (source: %s)",
+                     ticker, float(candle.get("close", 0) or 0),
+                     "live_ws" if self._angel_connected else "historical_fallback")
         try:
             self._process_candle(ticker, candle)
         except Exception as exc:
@@ -383,6 +386,16 @@ class MarketScheduler:
             ml_prediction=ml_pred,
             intelligence=intel,
             open_positions=open_count,
+        )
+
+        logger.info(
+            "[decision] %s → signal=%s score=%.1f prob_up=%.2f regime=%s intel=%s",
+            ticker,
+            signal.get("signal", "?"),
+            signal.get("combined_score", 0.0),
+            ml_pred.get("prob_up", 0.5),
+            regime.get("regime", "?"),
+            intel.get("action", "?"),
         )
 
         # Shadow agents observe regardless of signal
@@ -518,6 +531,16 @@ class MarketScheduler:
         self.running = False
 
     # ──────────────────────────────────────────────────────
+    # Angel One connection state callbacks
+    # ──────────────────────────────────────────────────────
+
+    def _on_angel_disconnect(self) -> None:
+        """Called by AngelOneFeed._handle_close() — activates the fallback loop."""
+        self._angel_connected = False
+        logger.warning("[scheduler] Angel One WebSocket disconnected — historical fallback activated")
+        print("[scheduler] Angel One disconnected — historical fallback will run every 5min")
+
+    # ──────────────────────────────────────────────────────
     # Historical candle fallback loop
     # ──────────────────────────────────────────────────────
 
@@ -584,7 +607,10 @@ class MarketScheduler:
 
         # Connect Angel One feed
         try:
-            self._feed = AngelOneFeed(on_tick_callback=self.on_tick)
+            self._feed = AngelOneFeed(
+                on_tick_callback=self.on_tick,
+                on_disconnect_callback=self._on_angel_disconnect,
+            )
             authenticated = self._feed.authenticate()
             if authenticated:
                 tokens = [
@@ -598,10 +624,10 @@ class MarketScheduler:
                 logger.info("[scheduler] Angel One feed connected, %d tokens subscribed", len(tokens))
             else:
                 self._angel_connected = False
-                logger.warning("[scheduler] Angel One auth failed — running without live feed")
+                logger.warning("[scheduler] Angel One auth failed — historical fallback will run")
         except Exception as exc:
             self._angel_connected = False
-            logger.warning("[scheduler] Feed connection failed: %s — continuing", exc)
+            logger.warning("[scheduler] Feed connection failed: %s — historical fallback will run", exc)
 
         # Start historical fallback loop (fires every 5 min when Angel One is offline)
         import threading as _threading
