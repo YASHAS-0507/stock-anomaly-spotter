@@ -85,6 +85,54 @@ class CandleBuilder:
                 return None
             return history[-1]
 
+    def ingest_historical_candles(
+        self, ticker: str, timeframe: str, candles: list
+    ) -> int:
+        """
+        Inject REST API candles directly into the in-memory store.
+        Skips candles whose timestamp already exists in the store.
+        Returns the number of new candles added.
+        """
+        if not candles:
+            return 0
+        key = (ticker, timeframe)
+        with self._lock:
+            history = self._history[key]
+            existing_ts = {c.get("timestamp") for c in history}
+            added = 0
+            for c in candles:
+                ts = c.get("timestamp")
+                if ts in existing_ts:
+                    continue
+                clean = {k: v for k, v in c.items() if not k.startswith("_")}
+                clean.setdefault("ticker", ticker)
+                clean.setdefault("timeframe", timeframe)
+                history.append(clean)
+                existing_ts.add(ts)
+                added += 1
+        return added
+
+    def last_candle_age_seconds(self, ticker: str, timeframe: str) -> Optional[float]:
+        """
+        Returns seconds since the most recent candle's timestamp, or None if empty.
+        Uses wall-clock comparison against the candle's ISO timestamp string.
+        """
+        import time as _time
+        latest = self.get_latest_candle(ticker, timeframe)
+        if not latest:
+            return None
+        try:
+            from datetime import datetime
+            ts_str = latest.get("timestamp", "")
+            # ISO 8601 with tzinfo — parse directly
+            dt = datetime.fromisoformat(ts_str)
+            now = datetime.now(IST)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST)
+            return (now - dt).total_seconds()
+        except Exception:
+            return None
+
     # ──────────────────────────────────────────────────────
     # Internal helpers
     # ──────────────────────────────────────────────────────

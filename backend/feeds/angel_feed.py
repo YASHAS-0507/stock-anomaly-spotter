@@ -62,6 +62,11 @@ _MODE_LTP = 1
 # Backoff schedule in seconds
 _BACKOFF = [5, 10, 30]
 
+# Maximum WebSocket reconnect attempts per session.
+# After this many failures the feed gives up and the system runs on
+# the 1-minute historical REST fallback loop instead.
+_MAX_RECONNECT_ATTEMPTS = 3
+
 # Session cache TTL — Angel One JWTs last 24h; we refresh every 6h for safety
 _TOKEN_TTL = 21600
 
@@ -424,6 +429,17 @@ class AngelOneFeed:
                 pass
 
         if not self._stop_event.is_set():
+            if self._reconnect_attempt >= _MAX_RECONNECT_ATTEMPTS:
+                print(
+                    f"[feed] WS unavailable after {_MAX_RECONNECT_ATTEMPTS} attempts — "
+                    "running on historical fallback only"
+                )
+                logger.warning(
+                    "[angel_feed] Max reconnect attempts (%d) reached — "
+                    "WebSocket disabled for this session; historical REST fallback is active",
+                    _MAX_RECONNECT_ATTEMPTS,
+                )
+                return
             time.sleep(5)
             self.reconnect()
 
