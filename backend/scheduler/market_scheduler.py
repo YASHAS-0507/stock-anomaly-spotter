@@ -274,7 +274,7 @@ class MarketScheduler:
         """Fired by AngelOneFeed._handle_close() on unexpected WebSocket close."""
         self._angel_connected = False
         logger.warning("[scheduler] Angel One WebSocket disconnected — historical fallback activated")
-        print("[scheduler] Angel One disconnected — historical fallback will run every 5min")
+        print("[scheduler] Angel One disconnected — historical fallback will run every 1min")
 
     # ──────────────────────────────────────────────────────
     # Tick + candle pipeline
@@ -550,12 +550,15 @@ class MarketScheduler:
 
     def _historical_fallback_loop(self) -> None:
         """
-        Background thread: when Angel One WebSocket is offline, fetches the
-        latest 5-min candle from the historical API every 5 minutes and feeds
-        it into on_new_candle() so the decision engine keeps running.
+        Background thread: PRIMARY data source for the decision engine.
+        Fetches the latest 5-min candles from the Angel One REST API every
+        60 seconds and ingests them into the candle_builder store.
 
-        Adds a 0.4s delay between tickers to respect Angel One's rate limit
-        of 3 historical API requests per second.
+        WebSocket ticks are a bonus — the decision pipeline runs regardless
+        of WebSocket connection state, as long as the REST API returns data.
+
+        Throttles to 0.6s between tickers (~1.6 req/s, well under Angel One's
+        3 req/s limit).
         """
         while self.running:
             try:
@@ -565,8 +568,9 @@ class MarketScheduler:
                 in_window1 = "09:30" <= time_str <= "11:30"
                 in_window2 = "14:00" <= time_str <= "14:45"
 
-                if (in_window1 or in_window2) and not self._angel_connected:
-                    print("[scheduler] Historical fallback: fetching candles for watchlist")
+                if in_window1 or in_window2:
+                    ws_status = "WS+REST" if self._angel_connected else "REST-only"
+                    print(f"[scheduler] Historical REST fetch ({ws_status}) for {len(self.watchlist)} tickers")
 
                     from feeds.data_provider import data_provider
                     for ticker in list(self.watchlist):
@@ -577,6 +581,14 @@ class MarketScheduler:
                                 days_back=1,
                             )
                             if candles and len(candles) >= 2:
+                                # Ingest all candles into the store so the decision
+                                # engine has a full history even without WS ticks.
+                                added = self.candle_builder.ingest_historical_candles(
+                                    ticker, "5min", candles
+                                )
+                                if added:
+                                    logger.debug("[fallback] %s: ingested %d new candles", ticker, added)
+                                # Trigger the decision pipeline on the latest candle
                                 latest = candles[-1]
                                 self.on_new_candle(ticker, "5min", latest)
                         except Exception as exc:
@@ -586,7 +598,7 @@ class MarketScheduler:
             except Exception as exc:
                 print(f"[fallback] loop error: {exc}")
 
-            time.sleep(300)  # 5 minutes
+            time.sleep(60)  # every 1 minute
 
     # ──────────────────────────────────────────────────────
     # Lifecycle
