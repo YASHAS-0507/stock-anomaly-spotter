@@ -38,7 +38,7 @@ _ORB_END_HOUR,      _ORB_END_MIN       = 9,  30   # Opening Range: 9:15 – 9:30
 # Trading window boundaries (minutes since market open)
 _WINDOW1_END  = 75   # 9:15 – 10:30 — best momentum window
 _DEAD_ZONE_END = 135  # 10:30 – 11:30 — choppy/low-volume
-_WINDOW2_END  = 255  # 11:30 – 13:30 — second momentum window
+_WINDOW2_END  = 345  # 11:30 – 15:00 — second momentum window (aligned with regime detector)
 
 # Defaults returned when data is insufficient
 _DEFAULTS: dict = {

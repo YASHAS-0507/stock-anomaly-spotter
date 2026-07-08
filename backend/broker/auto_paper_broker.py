@@ -8,7 +8,9 @@ performs a hard square-off at 15:15 IST.
 Thread-safe — all position mutations acquire self._lock.
 """
 
+import json
 import logging
+import os
 import threading
 import uuid
 from datetime import datetime
@@ -19,6 +21,8 @@ import pytz
 logger = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
+
+_STATE_FILE = "/tmp/paper_broker_state.json"
 
 _INITIAL_CAPITAL    = 100_000.0
 _DEFAULT_HOLD_MINS  = 90          # fallback max_hold_minutes if sizing omits it
@@ -52,6 +56,7 @@ class AutoPaperBroker:
         self._paused           = False
         self._emergency_stopped = False
         self._lock             = threading.Lock()
+        self._load_state()
 
     # ──────────────────────────────────────────────────────
     # Order execution
@@ -139,6 +144,7 @@ class AutoPaperBroker:
             self.orders.append(order)
 
         logger.info("[broker] Filled %s @ %.2f x%d (id=%s)", ticker, fill_price, shares, trade_id)
+        self._save_state()
         return {"status": "filled", "fill_price": fill_price, "trade_id": trade_id, "reason": None}
 
     # ──────────────────────────────────────────────────────
@@ -351,12 +357,52 @@ class AutoPaperBroker:
 
         del self.positions[ticker]
         logger.info("[broker] Closed %s @ %.2f reason=%s pnl=%.2f", ticker, fill_price, reason, pnl)
+        self._save_state()
         return trade
 
     @staticmethod
     def _reject(trade_id: str, ticker: str, reason: str) -> dict:
         logger.debug("[broker] Rejected %s (%s): %s", ticker, trade_id, reason)
         return {"status": "rejected", "fill_price": 0.0, "trade_id": trade_id, "reason": reason}
+
+    # ──────────────────────────────────────────────────────
+    # State persistence (survive Railway redeploy)
+    # ──────────────────────────────────────────────────────
+
+    def _save_state(self) -> None:
+        try:
+            state = {
+                "capital":    self.capital,
+                "daily_pnl":  self.daily_pnl,
+                "daily_loss": self.daily_loss,
+                "positions":  self.positions,
+                "trades":     self.trades[-200:],  # cap to last 200
+            }
+            tmp = _STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, _STATE_FILE)
+        except Exception as exc:
+            logger.warning("[broker] _save_state failed: %s", exc)
+
+    def _load_state(self) -> None:
+        if not os.path.exists(_STATE_FILE):
+            logger.info("[broker] No saved state found — starting fresh")
+            return
+        try:
+            with open(_STATE_FILE) as f:
+                state = json.load(f)
+            self.capital    = float(state.get("capital",    self.capital))
+            self.daily_pnl  = float(state.get("daily_pnl",  0.0))
+            self.daily_loss = float(state.get("daily_loss", 0.0))
+            self.positions  = state.get("positions", {})
+            self.trades     = state.get("trades",    [])
+            logger.info(
+                "[broker] Restored state: capital=₹%.2f positions=%d",
+                self.capital, len(self.positions),
+            )
+        except Exception as exc:
+            logger.warning("[broker] _load_state failed — starting fresh: %s", exc)
 
 
 # Module-level singleton
