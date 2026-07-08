@@ -77,17 +77,26 @@ class _AngelSession:
     _lock = threading.Lock()
     api         = None
     auth_token: str   = ""
-    feed_token: str   = ""
+    feed_token: str   = ""        # cleared on WS close; forces fresh token on reconnect
     expiry:     float = 0.0
+    _last_login: float = 0.0      # epoch of last generateSession() call
+    _MIN_LOGIN_INTERVAL = 65.0    # Angel One rate limit: max 1 login/minute
 
     @classmethod
     def is_valid(cls) -> bool:
-        return bool(cls.auth_token) and time.time() < cls.expiry
+        # Both auth_token AND feed_token must be present and within TTL.
+        # feed_token is cleared on WebSocket close so reconnects always get a fresh one.
+        return bool(cls.auth_token) and bool(cls.feed_token) and time.time() < cls.expiry
 
     @classmethod
     def invalidate(cls) -> None:
-        """Force a fresh login on the next authenticate() call."""
-        cls.expiry = 0.0
+        """Force a fresh generateSession() on the next authenticate() call."""
+        cls.expiry     = 0.0
+        cls.feed_token = ""   # explicit clear — is_valid() checks this too
+
+    @classmethod
+    def seconds_since_last_login(cls) -> float:
+        return time.time() - cls._last_login
 
 
 class AngelOneFeed:
@@ -177,10 +186,20 @@ class AngelOneFeed:
             print(f"[angel] Client ID: {self._client_id[:4]}…")
             logger.info("[angel_feed] Real TOTP login for client %s at %s", self._client_id, now_ist)
 
+            # Angel One rate limit: 1 generateSession() per minute.
+            # Enforce a minimum gap to prevent auth errors during rapid reconnects.
+            elapsed = _AngelSession.seconds_since_last_login()
+            if elapsed < _AngelSession._MIN_LOGIN_INTERVAL:
+                wait = _AngelSession._MIN_LOGIN_INTERVAL - elapsed
+                print(f"[angel] Rate limit: waiting {wait:.0f}s before generateSession()")
+                logger.info("[angel_feed] Login rate limit — sleeping %.0fs", wait)
+                time.sleep(wait)
+
             try:
                 # TOTP must be generated fresh immediately before login
                 totp_code = pyotp.TOTP(self._totp_secret).now()
                 print(f"[angel] TOTP generated (time-sensitive — using immediately)")
+                _AngelSession._last_login = time.time()
             except Exception as exc:
                 print(f"[angel] TOTP generation failed: {exc}")
                 logger.error("[angel_feed] TOTP generation failed: %s", exc)
@@ -301,6 +320,13 @@ class AngelOneFeed:
         if self._stop_event.is_set():
             return
 
+        # Feed token is invalidated when the WebSocket closes on the Angel One side.
+        # Without clearing the cache, authenticate() fast-paths to the stale feed token,
+        # and the new WebSocket immediately disconnects again — causing this loop.
+        print("[angel] Clearing session cache — forcing fresh feed token for reconnect")
+        logger.info("[angel_feed] Invalidating session cache before reconnect (fresh feed token required)")
+        _AngelSession.invalidate()
+
         self.connect_websocket()
 
     def disconnect(self) -> None:
@@ -325,7 +351,8 @@ class AngelOneFeed:
     def _handle_open(self, wsapp) -> None:
         self._connected = True
         self._reconnect_attempt = 0
-        print("[angel] WebSocket on_open — connection established")
+        self._session_tick_count = 0  # reset per-session tick counter
+        print("[angel] WebSocket on_open — connection established — waiting for ticks…")
         logger.info("[angel_feed] WebSocket connected.")
         if self._subscribed_tokens:
             self._send_subscription()
@@ -362,7 +389,12 @@ class AngelOneFeed:
             ticker = get_ticker_by_token(raw_token) or raw_token
 
             ist_time = datetime.now(_IST).strftime("%H:%M:%S")
-            print(f"[tick] symbol={ticker} price={price} time={ist_time}")
+            self._session_tick_count = getattr(self, "_session_tick_count", 0) + 1
+            n = self._session_tick_count
+            if n <= 5 or n % 100 == 0:
+                print(f"[tick #{n}] symbol={ticker} price={price} time={ist_time}")
+            else:
+                logger.debug("[tick #%d] %s price=%s", n, ticker, price)
 
             if self._on_tick_cb and price > 0:
                 self._on_tick_cb(ticker, price, volume, ts)
@@ -380,8 +412,9 @@ class AngelOneFeed:
             str(args[1]) if len(args) >= 2 and args[1]
             else (str(args[0]) if args else "unknown")
         )
-        print(f"[angel] WebSocket on_close: {reason}")
-        logger.warning("[angel_feed] WebSocket closed — reason: %s", reason)
+        ticks = getattr(self, "_session_tick_count", 0)
+        print(f"[angel] WebSocket on_close: {reason} | ticks this session: {ticks}")
+        logger.warning("[angel_feed] WebSocket closed — reason: %s | session ticks: %d", reason, ticks)
 
         # Fire disconnect callback so callers can activate fallback
         if self._on_disconnect_cb is not None:
