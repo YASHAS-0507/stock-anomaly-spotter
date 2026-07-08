@@ -8,10 +8,13 @@ Thread-safe. Uses relative bucketing from each ticker's first tick so that
 unit tests with synthetic timestamps are deterministic regardless of wall-clock time.
 """
 
+import logging
 import threading
 from collections import defaultdict, deque
 from datetime import datetime
 from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 import pytz
 
@@ -174,8 +177,11 @@ class CandleBuilder:
             if self.on_candle_complete is not None:
                 try:
                     self.on_candle_complete(ticker, timeframe, completed)
-                except Exception:
-                    pass
+                except Exception as _cb_exc:
+                    logger.error(
+                        "[candle_builder] on_candle_complete callback failed "
+                        "for %s %s: %s", ticker, timeframe, _cb_exc, exc_info=True,
+                    )
             # Start new candle
             self._current[key] = _new_candle(ticker, timeframe, bucket, price, volume, timestamp)
 

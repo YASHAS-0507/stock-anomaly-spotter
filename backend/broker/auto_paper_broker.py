@@ -11,12 +11,14 @@ Thread-safe — all position mutations acquire self._lock.
 import logging
 import threading
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 _INITIAL_CAPITAL    = 100_000.0
 _DEFAULT_HOLD_MINS  = 90          # fallback max_hold_minutes if sizing omits it
@@ -28,7 +30,7 @@ def _ist_now_str() -> str:
 
 def _parse_ist(ts: str) -> Optional[datetime]:
     try:
-        return datetime.strptime(ts.replace(" IST", ""), "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
+        return IST.localize(datetime.strptime(ts.replace(" IST", ""), "%Y-%m-%d %H:%M:%S"))
     except Exception:
         return None
 
