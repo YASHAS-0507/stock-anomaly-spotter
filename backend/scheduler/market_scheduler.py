@@ -102,6 +102,7 @@ class MarketScheduler:
         self.last_intelligence_refresh: Optional[datetime] = None
         self.current_prices:       dict  = {}
         self.market_mood_cache:    dict  = {}
+        self.last_trade_times:     dict  = {}  # ticker → datetime of last fill
         self._feed: Optional[AngelOneFeed] = None
         self._angel_connected: bool = False
 
@@ -394,6 +395,7 @@ class MarketScheduler:
             ml_prediction=ml_pred,
             intelligence=intel,
             open_positions=open_count,
+            last_trade_time=self.last_trade_times.get(ticker),
         )
 
         logger.info(
@@ -440,6 +442,7 @@ class MarketScheduler:
 
         order = auto_broker.execute_signal(signal, current_price, sizing)
         if order.get("status") == "filled":
+            self.last_trade_times[ticker] = datetime.now(_IST)
             logger.info(
                 "[scheduler] FILLED %s @ ₹%.2f x%d | SL=%.2f TP1=%.2f | id=%s",
                 ticker, order["fill_price"], sizing["shares"],

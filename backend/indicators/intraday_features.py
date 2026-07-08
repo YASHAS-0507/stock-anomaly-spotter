@@ -15,8 +15,10 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_ROOT not in sys.path:
@@ -26,7 +28,7 @@ from wyckoff.wyckoff_detector import wyckoff_detector
 
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 # Market session times (IST)
 _MARKET_OPEN_HOUR,  _MARKET_OPEN_MIN  = 9,  15
@@ -36,7 +38,7 @@ _ORB_END_HOUR,      _ORB_END_MIN       = 9,  30   # Opening Range: 9:15 – 9:30
 # Trading window boundaries (minutes since market open)
 _WINDOW1_END  = 75   # 9:15 – 10:30 — best momentum window
 _DEAD_ZONE_END = 135  # 10:30 – 11:30 — choppy/low-volume
-_WINDOW2_END  = 255  # 11:30 – 13:30 — second momentum window
+_WINDOW2_END  = 345  # 11:30 – 15:00 — second momentum window (aligned with regime detector)
 
 # Defaults returned when data is insufficient
 _DEFAULTS: dict = {

@@ -149,15 +149,18 @@ class DataProvider:
 
     def _angel_intraday(self, ticker: str, interval: str, days_back: int) -> tuple:
         try:
-            feed  = _get_angel_feed()
-            token = feed.get_symbol_token(ticker)
+            feed      = _get_angel_feed()
+            token     = feed.get_symbol_token(ticker)
             if not token:
                 return [], "no_token"
-            key = "1min" if interval == "ONE_MINUTE" else "5min"
-            warmup = _angel_throttled(lambda: feed.get_warmup_candles(token, days_back=days_back))
-            candles = warmup.get(key, [])
+            now       = datetime.now(_IST)
+            from_date = (now - timedelta(days=days_back)).strftime("%Y-%m-%d") + " 09:15"
+            to_date   = now.strftime("%Y-%m-%d") + " 15:30"
+            candles   = _angel_throttled(
+                lambda: feed.get_historical_candles(token, interval, from_date, to_date)
+            )
             if candles:
-                logger.debug("[data_provider] angel_intraday %s: %d candles", ticker, len(candles))
+                logger.debug("[data_provider] angel_intraday %s %s: %d candles", ticker, interval, len(candles))
                 return candles, "angel_one"
         except Exception as exc:
             logger.warning("[data_provider] Angel One intraday failed: %s", exc)
