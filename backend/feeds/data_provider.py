@@ -160,7 +160,7 @@ class DataProvider:
                 logger.debug("[data_provider] angel_intraday %s: %d candles", ticker, len(candles))
                 return candles, "angel_one"
         except Exception as exc:
-            logger.debug("[data_provider] Angel One intraday failed: %s", exc)
+            logger.warning("[data_provider] Angel One intraday failed: %s", exc)
         return [], "angel_unavailable"
 
     def _angel_prev_day(self, ticker: str) -> dict:
@@ -172,7 +172,7 @@ class DataProvider:
             today     = datetime.now(_IST).date()
             from_date = (today - timedelta(days=7)).strftime("%Y-%m-%d") + " 09:15"
             to_date   = today.strftime("%Y-%m-%d") + " 15:30"
-            candles   = feed.get_historical_candles(token, "ONE_DAY", from_date, to_date)
+            candles   = _angel_throttled(lambda: feed.get_historical_candles(token, "ONE_DAY", from_date, to_date))
             if candles:
                 c = candles[-2] if len(candles) >= 2 else candles[-1]
                 return {
@@ -185,7 +185,7 @@ class DataProvider:
                     "source": "angel_one",
                 }
         except Exception as exc:
-            logger.debug("[data_provider] Angel One prev day failed: %s", exc)
+            logger.warning("[data_provider] Angel One prev day failed: %s", exc)
         return {}
 
     def _angel_daily_ohlcv(self, ticker: str, days_back: int = 35) -> tuple:
@@ -231,7 +231,7 @@ class DataProvider:
             return df, "angel_one"
 
         except Exception as exc:
-            logger.debug("[data_provider] Angel One daily failed for %s: %s", ticker, exc)
+            logger.warning("[data_provider] Angel One daily failed for %s: %s", ticker, exc)
             return pd.DataFrame(), "angel_error"
 
     def _yf_intraday(self, ticker: str, interval: str, days_back: int) -> tuple:

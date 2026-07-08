@@ -15,8 +15,10 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_ROOT not in sys.path:
@@ -26,7 +28,7 @@ from wyckoff.wyckoff_detector import wyckoff_detector
 
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 # Market session times (IST)
 _MARKET_OPEN_HOUR,  _MARKET_OPEN_MIN  = 9,  15

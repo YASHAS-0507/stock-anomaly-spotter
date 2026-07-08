@@ -231,6 +231,12 @@ class MarketScheduler:
                 logger.info("[scheduler] Loaded saved ML model")
             else:
                 logger.info("[scheduler] No saved model — will use probability fallback")
+                # With prob_up=0.5 the combined score ≈ 56, below the default 65 threshold.
+                # Relax to 45 so setups can fire and accumulate training data.
+                if self.day_min_score > 45:
+                    self.day_min_score = 45
+                    print("[decision] untrained model — using relaxed threshold 45")
+                    logger.info("[decision] untrained model — min_score relaxed to 45")
 
         trading = "ENABLED" if not self.skip_today else "SKIPPED (VIX)"
         logger.info("[scheduler] Pre-market complete. VIX=%s Trading=%s",
@@ -575,25 +581,38 @@ class MarketScheduler:
                     from feeds.data_provider import data_provider
                     for ticker in list(self.watchlist):
                         try:
-                            candles, source = data_provider.get_intraday_candles(
+                            # ── 5-min candles ──────────────────────────────
+                            candles_5min, _ = data_provider.get_intraday_candles(
                                 ticker,
                                 interval="FIVE_MINUTE",
                                 days_back=1,
                             )
-                            if candles and len(candles) >= 2:
-                                # Ingest all candles into the store so the decision
-                                # engine has a full history even without WS ticks.
+                            if candles_5min and len(candles_5min) >= 2:
                                 added = self.candle_builder.ingest_historical_candles(
-                                    ticker, "5min", candles
+                                    ticker, "5min", candles_5min
                                 )
                                 if added:
-                                    logger.debug("[fallback] %s: ingested %d new candles", ticker, added)
-                                # Trigger the decision pipeline on the latest candle
-                                latest = candles[-1]
-                                self.on_new_candle(ticker, "5min", latest)
+                                    logger.debug("[fallback] %s: +%d 5min candles", ticker, added)
+                                self.on_new_candle(ticker, "5min", candles_5min[-1])
+
+                            time.sleep(0.6)  # throttle between 5min and 1min calls
+
+                            # ── 1-min candles (features engine needs these) ─
+                            candles_1min, _ = data_provider.get_intraday_candles(
+                                ticker,
+                                interval="ONE_MINUTE",
+                                days_back=1,
+                            )
+                            if candles_1min:
+                                added = self.candle_builder.ingest_historical_candles(
+                                    ticker, "1min", candles_1min
+                                )
+                                if added:
+                                    logger.debug("[fallback] %s: +%d 1min candles", ticker, added)
+
                         except Exception as exc:
-                            print(f"[fallback] {ticker}: {exc}")
-                        time.sleep(0.6)  # ~1.6 req/sec — safe headroom under 3 req/sec limit
+                            logger.warning("[fallback] %s: %s", ticker, exc)
+                        time.sleep(0.6)  # throttle between tickers
 
             except Exception as exc:
                 print(f"[fallback] loop error: {exc}")

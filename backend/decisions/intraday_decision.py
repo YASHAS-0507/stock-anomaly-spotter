@@ -18,9 +18,11 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import pytz
+
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 DECISION_CONFIG = {
     "weights": {
@@ -48,7 +50,7 @@ SETUPS: dict[str, dict] = {
     "VWAP_BOUNCE": {
         "required": {
             "price_above_vwap":        True,
-            "price_vs_vwap_pct_max":   0.15,
+            "price_vs_vwap_pct_max":   1.5,   # percentage scale (features compute /vwap*100)
             "volume_ratio_min":        1.2,
             "rsi_min":                 45,
         },
