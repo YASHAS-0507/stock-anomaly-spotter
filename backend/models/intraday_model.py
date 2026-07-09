@@ -16,7 +16,11 @@ import sys
 logger = logging.getLogger(__name__)
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MODEL_PATH   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_model.pkl")
+
+# MODEL_PATH env var → Railway Volume mount (e.g. /mnt/models/intraday_model.pkl).
+# Falls back to backend/models/intraday_model.pkl when not set.
+_DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_model.pkl")
+_MODEL_PATH = os.environ.get("MODEL_PATH", _DEFAULT_MODEL_PATH)
 
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)

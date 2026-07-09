@@ -13,7 +13,7 @@ import os
 import numpy as np
 import pandas as pd
 import math
-from typing import Dict, Any, Union, List
+from typing import Dict, Any, Union, List, Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -1190,6 +1190,69 @@ def full_health_check():
         "checks":          checks,
         "broker_snapshot": broker_snapshot,
         "version":         "3.0.0-intraday",
+    }
+
+
+_training_lock = _threading.Lock()
+_training_status: Dict[str, Any] = {"running": False, "last_result": None, "last_error": None}
+
+
+@app.post("/api/model/train")
+def model_train(tickers: Optional[List[str]] = None, days_back: int = Query(60, ge=7, le=180)):
+    """
+    Trigger XGBoost retraining in a background thread.
+    Uses Angel One candle history for training data.
+    POST body: optional JSON list of tickers (defaults to scheduler watchlist).
+    Returns immediately; check GET /api/model/status for progress.
+    """
+    if not _training_lock.acquire(blocking=False):
+        return {"status": "already_running", "message": "Training already in progress"}
+
+    def _do_train():
+        try:
+            _training_status["running"] = True
+            _training_status["last_error"] = None
+
+            ticker_list = tickers or list(market_scheduler.watchlist) or [
+                "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+                "SBIN", "BAJFINANCE", "WIPRO", "AXISBANK", "KOTAKBANK",
+            ]
+            logger.info("[api/model/train] Starting training on %d tickers, %d days back",
+                        len(ticker_list), days_back)
+
+            data = intraday_model.get_training_data(ticker_list, days_back=days_back)
+            if len(data) < 30:
+                _training_status["last_error"] = f"Insufficient training data: {len(data)} samples (need 30+)"
+                logger.warning("[api/model/train] %s", _training_status["last_error"])
+                return
+
+            result = intraday_model.train(data)
+            result["tickers_used"] = len(ticker_list)
+            result["samples_total"] = len(data)
+            _training_status["last_result"] = result
+            logger.info("[api/model/train] Done — accuracy=%.3f baseline=%.3f n_train=%d",
+                        result["accuracy"], result["baseline_accuracy"], result["n_train"])
+        except Exception as exc:
+            _training_status["last_error"] = str(exc)
+            logger.warning("[api/model/train] Failed: %s", exc)
+        finally:
+            _training_status["running"] = False
+            _training_lock.release()
+
+    _threading.Thread(target=_do_train, daemon=True, name="model-retrain").start()
+    return {"status": "started", "message": "Training started in background — check /api/model/status"}
+
+
+@app.get("/api/model/status")
+def model_status():
+    """Return current model training status and last result."""
+    return {
+        "trained":        intraday_model.is_trained(),
+        "training_now":   _training_status["running"],
+        "last_result":    _training_status["last_result"],
+        "last_error":     _training_status["last_error"],
+        "model_path":     os.environ.get("MODEL_PATH", "backend/models/intraday_model.pkl (ephemeral)"),
+        "durable_storage": bool(os.environ.get("MODEL_PATH")),
     }
 
 
