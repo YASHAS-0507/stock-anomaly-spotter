@@ -103,6 +103,7 @@ class MarketScheduler:
         self.current_prices:       dict  = {}
         self.market_mood_cache:    dict  = {}
         self.last_trade_times:     dict  = {}  # ticker → datetime of last fill
+        self.regime_cache:         dict  = {}  # ticker → latest regime dict
         self._feed: Optional[AngelOneFeed] = None
         self._angel_connected: bool = False
 
@@ -373,6 +374,7 @@ class MarketScheduler:
 
         mood   = self.market_mood_cache or {"vix": 15.0, "vix_regime": "NORMAL"}
         regime = self.regime_detector.detect(features, mood, now)
+        self.regime_cache[ticker] = regime
 
         if not regime.get("trading_permitted", False):
             return
