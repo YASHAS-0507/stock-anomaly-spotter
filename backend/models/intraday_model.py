@@ -5,7 +5,8 @@ XGBoost binary classifier: will price be higher in 15 minutes?
 
 Target:  future_price > current_price  →  1 (up)  else  0 (down)
 Split:   time-ordered 80/20 (NEVER random shuffle)
-Persist: backend/models/intraday_model.pkl
+Persist: Supabase Storage (bucket: ml-models, object: intraday_model.pkl)
+         Local session cache: /tmp/intraday_model.pkl
 """
 
 import logging
@@ -17,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 _BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# MODEL_PATH env var → Railway Volume mount (e.g. /mnt/models/intraday_model.pkl).
-# Falls back to backend/models/intraday_model.pkl when not set.
-_DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intraday_model.pkl")
-_MODEL_PATH = os.environ.get("MODEL_PATH", _DEFAULT_MODEL_PATH)
+# Local session cache — survives within a deployment, Supabase is the durable store
+_MODEL_PATH      = "/tmp/intraday_model.pkl"
+_SB_BUCKET       = "ml-models"
+_SB_OBJECT       = "intraday_model.pkl"
 
 if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
@@ -254,11 +255,16 @@ class IntradayModel:
 
     def load(self) -> bool:
         """
-        Load model from disk.
-
+        Load model — tries Supabase Storage first, falls back to local /tmp cache.
         Returns True if loaded successfully, False otherwise.
         """
+        # ── Try Supabase Storage ──────────────────────────────────────────────
+        if _sb_download():
+            logger.info("[model] Downloaded from Supabase Storage → %s", _MODEL_PATH)
+
+        # ── Load from local cache (written by download or previous session) ──
         if not os.path.exists(_MODEL_PATH):
+            logger.info("[model] No model file at %s — starting untrained", _MODEL_PATH)
             return False
         try:
             with open(_MODEL_PATH, "rb") as fh:
@@ -332,19 +338,93 @@ class IntradayModel:
 
     def _save(self) -> None:
         try:
-            os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
             with open(_MODEL_PATH, "wb") as fh:
                 pickle.dump({
                     "model":               self._model,
                     "feature_importances": self._feature_importances,
                 }, fh)
-            logger.info("[model] Saved to %s", _MODEL_PATH)
+            logger.info("[model] Saved locally to %s", _MODEL_PATH)
         except Exception as exc:
-            logger.warning("[model] Save failed: %s", exc)
+            logger.warning("[model] Local save failed: %s", exc)
+            return
+
+        # Upload to Supabase Storage for persistence across redeploys
+        _sb_upload()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Supabase Storage helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _sb_client():
+    """Return a Supabase client or None if env vars not configured."""
+    try:
+        url = os.environ.get("SUPABASE_URL", "").strip()
+        key = os.environ.get("SUPABASE_KEY", "").strip()
+        if not url or not key:
+            return None
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception as exc:
+        logger.warning("[model] Supabase client init failed: %s", exc)
+        return None
+
+
+def _sb_upload() -> bool:
+    """Upload /tmp/intraday_model.pkl to Supabase Storage. Returns True on success."""
+    try:
+        sb = _sb_client()
+        if sb is None:
+            logger.warning("[model] Supabase not configured — model not uploaded (will be lost on redeploy)")
+            return False
+        with open(_MODEL_PATH, "rb") as fh:
+            data = fh.read()
+        # Try upsert; fall back to remove-then-upload if upsert unsupported
+        try:
+            sb.storage.from_(_SB_BUCKET).upload(
+                path=_SB_OBJECT,
+                file=data,
+                file_options={"content-type": "application/octet-stream", "upsert": "true"},
+            )
+        except Exception:
+            try:
+                sb.storage.from_(_SB_BUCKET).remove([_SB_OBJECT])
+            except Exception:
+                pass
+            sb.storage.from_(_SB_BUCKET).upload(
+                path=_SB_OBJECT,
+                file=data,
+                file_options={"content-type": "application/octet-stream"},
+            )
+        logger.info("[model] Uploaded to Supabase Storage: %s/%s (%d bytes)",
+                    _SB_BUCKET, _SB_OBJECT, len(data))
+        return True
+    except Exception as exc:
+        logger.warning("[model] Supabase upload failed: %s", exc)
+        return False
+
+
+def _sb_download() -> bool:
+    """Download from Supabase Storage to /tmp/intraday_model.pkl. Returns True on success."""
+    try:
+        sb = _sb_client()
+        if sb is None:
+            return False
+        data = sb.storage.from_(_SB_BUCKET).download(_SB_OBJECT)
+        if not data:
+            return False
+        with open(_MODEL_PATH, "wb") as fh:
+            fh.write(data)
+        logger.info("[model] Downloaded from Supabase Storage: %s/%s (%d bytes)",
+                    _SB_BUCKET, _SB_OBJECT, len(data))
+        return True
+    except Exception as exc:
+        logger.debug("[model] Supabase download skipped: %s", exc)
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Prediction helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _neutral_result() -> dict:

@@ -1246,13 +1246,17 @@ def model_train(tickers: Optional[List[str]] = None, days_back: int = Query(60, 
 @app.get("/api/model/status")
 def model_status():
     """Return current model training status and last result."""
+    sb_configured = bool(
+        os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY")
+    )
     return {
-        "trained":        intraday_model.is_trained(),
-        "training_now":   _training_status["running"],
-        "last_result":    _training_status["last_result"],
-        "last_error":     _training_status["last_error"],
-        "model_path":     os.environ.get("MODEL_PATH", "backend/models/intraday_model.pkl (ephemeral)"),
-        "durable_storage": bool(os.environ.get("MODEL_PATH")),
+        "trained":         intraday_model.is_trained(),
+        "training_now":    _training_status["running"],
+        "last_result":     _training_status["last_result"],
+        "last_error":      _training_status["last_error"],
+        "local_cache":     "/tmp/intraday_model.pkl",
+        "durable_storage": "Supabase Storage (ml-models/intraday_model.pkl)" if sb_configured else "not configured",
+        "supabase_ready":  sb_configured,
     }
 
 
