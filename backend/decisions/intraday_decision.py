@@ -358,6 +358,7 @@ class IntradayDecisionEngine:
             "wyckoff_bias":        features.get("wyckoff_bias", "NEUTRAL"),
             "wyckoff_spring":      features.get("wyckoff_spring_active"),
             "wyckoff_range_type":  features.get("wyckoff_range_type"),
+            "features":            features,
         }
 
 

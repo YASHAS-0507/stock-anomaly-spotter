@@ -455,7 +455,7 @@ class MarketScheduler:
         signal["ticker"]   = ticker
         signal["trade_id"] = trade_id
 
-        order = auto_broker.execute_signal(signal, current_price, sizing)
+        order = auto_broker.execute_signal(signal, current_price, sizing, features=features)
         if order.get("status") == "filled":
             self.last_trade_times[ticker] = datetime.now(_IST)
             logger.info(

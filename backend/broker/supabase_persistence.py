@@ -115,10 +115,11 @@ def upsert_broker_state(capital: float, daily_pnl: float, daily_loss: float, tod
     _run_in_thread(_do)
 
 
-def insert_trade(position: dict, today_str: str) -> None:
+def insert_trade(position: dict, today_str: str, features: dict = None) -> None:
     """
     Insert a new (open) trade row into paper_trades on fill.
     Exit fields (exit_price, pnl, exit_reason, exit_time) are NULL until close.
+    features_json stores the feature snapshot that triggered the signal.
     Non-blocking.
     """
     def _do():
@@ -126,7 +127,7 @@ def insert_trade(position: dict, today_str: str) -> None:
             sb = _get_client()
             if sb is None:
                 return
-            sb.table("paper_trades").insert({
+            row = {
                 "id":           position["trade_id"],
                 "ticker":       position["ticker"],
                 "setup":        position.get("setup_type", ""),
@@ -134,7 +135,16 @@ def insert_trade(position: dict, today_str: str) -> None:
                 "quantity":     int(position["shares"]),
                 "entry_time":   _parse_ist_to_iso(position.get("opened_at", "")),
                 "trading_date": today_str,
-            }).execute()
+                "outcome":      None,
+            }
+            if features:
+                row["features_json"] = {
+                    k: (bool(v) if isinstance(v, bool)
+                        else float(v) if isinstance(v, (int, float))
+                        else v)
+                    for k, v in features.items()
+                }
+            sb.table("paper_trades").insert(row).execute()
         except Exception as exc:
             logger.warning("[supabase] insert_trade failed: %s", exc)
     _run_in_thread(_do)
@@ -142,7 +152,8 @@ def insert_trade(position: dict, today_str: str) -> None:
 
 def update_trade_close(trade: dict) -> None:
     """
-    Update paper_trades with exit fields after a position closes.
+    Update paper_trades with exit fields + outcome after a position closes.
+    outcome: 1 = win (pnl > 0), 0 = loss (pnl <= 0).
     Non-blocking.
     """
     def _do():
@@ -150,11 +161,13 @@ def update_trade_close(trade: dict) -> None:
             sb = _get_client()
             if sb is None:
                 return
+            pnl = float(trade.get("pnl", 0.0))
             sb.table("paper_trades").update({
                 "exit_price":  round(float(trade["exit_price"]), 4),
-                "pnl":         round(float(trade["pnl"]),        2),
+                "pnl":         round(pnl, 2),
                 "exit_reason": trade.get("close_reason", ""),
                 "exit_time":   _parse_ist_to_iso(trade.get("closed_at", "")),
+                "outcome":     1 if pnl > 0 else 0,
             }).eq("id", trade["trade_id"]).execute()
         except Exception as exc:
             logger.warning("[supabase] update_trade_close failed: %s", exc)
