@@ -91,6 +91,27 @@ def get_equity_curve():
         return {"error": str(exc), "data_source": "error", "data_points": []}
 
 
+@router.get("/trades")
+def get_trades(days: int = 30, limit: int = 500):
+    """
+    Return trade history from Supabase (falls back to in-memory broker trades).
+    Query params:
+      days  — how many calendar days back to fetch (default 30)
+      limit — max rows (default 500, used for in-memory fallback)
+    """
+    try:
+        from broker.supabase_persistence import fetch_trades_by_date_range, is_available
+        if is_available():
+            trades = fetch_trades_by_date_range(days=days)
+            return {"source": "supabase", "count": len(trades), "trades": trades}
+    except Exception:
+        pass
+
+    # Fall back to in-memory broker state
+    trades = _get_trades()[:limit]
+    return {"source": "memory", "count": len(trades), "trades": trades}
+
+
 @router.get("/daily-report")
 def get_daily_report():
     try:
