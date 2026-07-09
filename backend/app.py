@@ -92,7 +92,7 @@ def startup_event():
     _IST = _pytz.timezone("Asia/Kolkata")
     _utc_now  = _dt.datetime.now(_pytz.utc)
     _ist_now  = _dt.datetime.now(_IST)
-    _server_tz = _dt.datetime.now().astimezone().tzname()
+    _server_tz = _dt.datetime.now(_IST).tzname()
     _mins     = _ist_now.hour * 60 + _ist_now.minute
 
     def is_market_open() -> bool:
