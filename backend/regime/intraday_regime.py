@@ -132,14 +132,17 @@ class IntradayRegimeDetector:
 
         # ── 2. VIX gates ─────────────────────────────────────────────────
         vix = float(market_mood.get("vix", 15.0) or 15.0)
+        vix_regime = "HIGH" if vix > 20.0 else "NORMAL"
 
         if vix > 25.0:
             return _build("EXTREME_VOLATILITY",
-                          f"India VIX={vix:.1f} (>25) — tail risk, no trading", 0.9)
+                          f"India VIX={vix:.1f} (>25) — tail risk, no trading", 0.9,
+                          vix_regime=vix_regime)
 
         if vix > 20.0:
             return _build("HIGH_VOLATILITY",
-                          f"India VIX={vix:.1f} (20–25) — elevated fear, half size", 0.85)
+                          f"India VIX={vix:.1f} (20–25) — elevated fear, half size", 0.85,
+                          vix_regime=vix_regime)
 
         # ── 3. Technical regime detection ────────────────────────────────
         zscore       = float(features.get("return_zscore", 0.0) or 0.0)
@@ -154,42 +157,47 @@ class IntradayRegimeDetector:
 
         if zscore > 2.0:
             return _build("CHOPPY",
-                          f"Return z-score={zscore:.2f} (>2.0) — erratic price action", 0.75)
+                          f"Return z-score={zscore:.2f} (>2.0) — erratic price action", 0.75,
+                          vix_regime=vix_regime)
 
         if orb_breakout and vol_ratio > 1.5:
             conf = min(0.95, 0.70 + (vol_ratio - 1.5) * 0.1)
             return _build("BREAKOUT",
-                          f"ORB breakout confirmed, volume={vol_ratio:.1f}× avg", round(conf, 2))
+                          f"ORB breakout confirmed, volume={vol_ratio:.1f}× avg", round(conf, 2),
+                          vix_regime=vix_regime)
 
         if above_vwap and ema9_above and vol_ratio > 1.2:
             conf = min(0.90, 0.65 + (vol_ratio - 1.2) * 0.08)
             return _build("TRENDING_UP",
                           f"Price above VWAP & EMA9>EMA21, volume={vol_ratio:.1f}× avg",
-                          round(conf, 2))
+                          round(conf, 2), vix_regime=vix_regime)
 
         if not above_vwap and not ema9_above:
             return _build("TRENDING_DOWN",
                           "Price below VWAP and EMA9<EMA21 — downtrend (no shorting Phase 1)",
-                          0.70)
+                          0.70, vix_regime=vix_regime)
 
         if bb_squeeze:
             return _build("RANGING",
-                          "Bollinger Bands squeezing — low-volatility range", 0.65)
+                          "Bollinger Bands squeezing — low-volatility range", 0.65,
+                          vix_regime=vix_regime)
 
         if in_window2:
             return _build("WINDOW2",
-                          "Afternoon session (14:00–15:00) — reduced size", 0.60)
+                          "Afternoon session (14:00–15:00) — reduced size", 0.60,
+                          vix_regime=vix_regime)
 
         # Default
         return _build("RANGING",
-                      "No strong directional signal — ranging conditions", 0.50)
+                      "No strong directional signal — ranging conditions", 0.50,
+                      vix_regime=vix_regime)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helper
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build(regime: str, reason: str, confidence: float) -> dict:
+def _build(regime: str, reason: str, confidence: float, vix_regime: str = "NORMAL") -> dict:
     permitted, multiplier = _REGIME_PROPS.get(regime, (False, 0.0))
     return {
         "regime":           regime,
@@ -197,4 +205,5 @@ def _build(regime: str, reason: str, confidence: float) -> dict:
         "size_multiplier":  multiplier,
         "reason":           reason,
         "confidence":       round(max(0.0, min(1.0, confidence)), 4),
+        "vix_regime":       vix_regime,
     }

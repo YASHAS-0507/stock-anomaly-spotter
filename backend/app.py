@@ -980,6 +980,15 @@ def live_prices():
         return {"error": str(exc)}
 
 
+@app.get("/api/regime/matrix")
+def regime_matrix():
+    """Return latest detected regime for each ticker in the watchlist."""
+    try:
+        return market_scheduler.regime_cache
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @app.get("/api/data/source")
 def data_source_status():
     """Return current data source status and cache stats."""
