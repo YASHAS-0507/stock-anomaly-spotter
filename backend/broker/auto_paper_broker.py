@@ -372,11 +372,12 @@ class AutoPaperBroker:
     def _save_state(self) -> None:
         try:
             state = {
-                "capital":    self.capital,
-                "daily_pnl":  self.daily_pnl,
-                "daily_loss": self.daily_loss,
-                "positions":  self.positions,
-                "trades":     self.trades[-200:],  # cap to last 200
+                "capital":      self.capital,
+                "daily_pnl":    self.daily_pnl,
+                "daily_loss":   self.daily_loss,
+                "positions":    self.positions,
+                "trades":       self.trades[-200:],  # cap to last 200
+                "trading_date": datetime.now(IST).strftime("%Y-%m-%d"),
             }
             tmp = _STATE_FILE + ".tmp"
             with open(tmp, "w") as f:
@@ -392,14 +393,20 @@ class AutoPaperBroker:
         try:
             with open(_STATE_FILE) as f:
                 state = json.load(f)
-            self.capital    = float(state.get("capital",    self.capital))
-            self.daily_pnl  = float(state.get("daily_pnl",  0.0))
-            self.daily_loss = float(state.get("daily_loss", 0.0))
-            self.positions  = state.get("positions", {})
-            self.trades     = state.get("trades",    [])
+            self.capital   = float(state.get("capital", self.capital))
+            self.positions = state.get("positions", {})
+            self.trades    = state.get("trades",    [])
+            today = datetime.now(IST).strftime("%Y-%m-%d")
+            if state.get("trading_date") == today:
+                self.daily_pnl  = float(state.get("daily_pnl",  0.0))
+                self.daily_loss = float(state.get("daily_loss", 0.0))
+            else:
+                self.daily_pnl  = 0.0
+                self.daily_loss = 0.0
+                logger.info("[broker] New trading day — daily P&L reset")
             logger.info(
-                "[broker] Restored state: capital=₹%.2f positions=%d",
-                self.capital, len(self.positions),
+                "[broker] Restored state: capital=₹%.2f positions=%d daily_pnl=₹%.2f",
+                self.capital, len(self.positions), self.daily_pnl,
             )
         except Exception as exc:
             logger.warning("[broker] _load_state failed — starting fresh: %s", exc)

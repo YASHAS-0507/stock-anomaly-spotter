@@ -66,6 +66,12 @@ export async function fetchWatchlist() {
   return res.json();
 }
 
+export async function fetchRegimeMatrix() {
+  const res = await fetch(`${API_BASE}/api/regime/matrix`);
+  if (!res.ok) throw new Error('Regime matrix fetch failed');
+  return res.json();
+}
+
 export async function postSchedulerControl(action) {
   const res = await fetch(
     `${API_BASE}/api/scheduler/${action}`,

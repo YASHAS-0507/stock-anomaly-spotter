@@ -309,6 +309,13 @@ class IntradayDecisionEngine:
 
         # ── 7. ML confidence gate ─────────────────────────────────────────
         setup_min_conf = SETUPS[setup_type]["min_ml_confidence"]
+        try:
+            from models.intraday_model import intraday_model as _model
+            if not _model.is_trained():
+                setup_min_conf = max(0.0, setup_min_conf - 0.08)
+                logger.info("[decision] untrained model — ML confidence thresholds relaxed for cold start")
+        except Exception:
+            pass
         if prob_up < setup_min_conf:
             result = _hold(
                 f"ML confidence {prob_up:.2f} < {setup_type} threshold {setup_min_conf}",

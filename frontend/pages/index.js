@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useWebSocket } from "../hooks/useWebSocket";
 import { usePrediction } from "../hooks/usePrediction";
 import TopBar               from "../components/TopBar";
 import TickerInput          from "../components/TickerInput";
@@ -29,6 +30,7 @@ import {
   postSchedulerControl,
   fetchCandles,
   fetchAnalytics,
+  fetchRegimeMatrix,
 } from "../services/api";
 
 export default function Home() {
@@ -42,10 +44,13 @@ export default function Home() {
     runAnalysis,
   } = usePrediction();
 
+  const { tickerPrices } = useWebSocket();
+
   const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [livePositions, setLivePositions]     = useState([]);
   const [todayTrades, setTodayTrades]         = useState([]);
   const [watchlist, setWatchlist]             = useState([]);
+  const [regimeMatrix, setRegimeMatrix]       = useState({});
   const [liveLoading, setLiveLoading]         = useState(false);
   const [candleData, setCandleData]           = useState([]);
   const [candleInterval, setCandleInterval]   = useState("5min");
@@ -57,16 +62,18 @@ export default function Home() {
   async function fetchLiveData() {
     try {
       setLiveLoading(true);
-      const [status, positions, trades, wl] = await Promise.all([
+      const [status, positions, trades, wl, rm] = await Promise.all([
         fetchSchedulerStatus(),
         fetchLivePositions(),
         fetchTodayTrades(),
         fetchWatchlist(),
+        fetchRegimeMatrix(),
       ]);
       setSchedulerStatus(status);
       setLivePositions(positions.open_positions || []);
       setTodayTrades(trades || []);
       setWatchlist(wl.watchlist || []);
+      setRegimeMatrix(rm || {});
     } catch (e) {
       console.error("Live data fetch failed:", e);
     } finally {
@@ -128,7 +135,7 @@ export default function Home() {
 
       {/* Live ticker strip — always visible at top */}
       <LiveTickerStrip
-        prices={schedulerStatus?.broker?.open_positions || []}
+        prices={tickerPrices}
         watchlist={watchlist}
         loading={liveLoading}
       />
@@ -287,7 +294,7 @@ export default function Home() {
           />
           <RegimeMatrix
             watchlist={watchlist}
-            regimes={{}}
+            regimes={regimeMatrix}
             loading={liveLoading}
           />
         </div>
