@@ -822,6 +822,17 @@ def paper_reset():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/api/paper/clear-emergency")
+def paper_clear_emergency():
+    """Clear emergency stop flag without resetting the portfolio."""
+    try:
+        auto_broker._emergency_stopped = False
+        auto_broker._paused = False
+        return {"status": "emergency stop cleared"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/paper/positions/check")
 def paper_positions_check():
     """Check open positions against latest market prices; auto-close SL/TP hits."""
@@ -887,10 +898,14 @@ def pause_scheduler():
 
 @app.post("/api/scheduler/resume")
 def resume_scheduler():
-    """Resume new trade execution after a pause."""
+    """Resume new trade execution after a pause or emergency stop."""
     try:
         auto_broker.resume()
-        return {"status": "ok", "paused": False}
+        # resume() only clears _paused; also clear emergency_stopped so trades
+        # aren't permanently blocked after an emergency stop + resume cycle.
+        auto_broker._emergency_stopped = False
+        auto_broker._paused = False
+        return {"status": "ok", "paused": False, "emergency_stopped": False}
     except Exception as exc:
         return {"status": "error", "paused": True, "message": str(exc)}
 
