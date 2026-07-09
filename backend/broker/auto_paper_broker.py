@@ -18,6 +18,11 @@ from typing import Optional
 
 import pytz
 
+try:
+    from broker import supabase_persistence as _sb
+except ImportError:
+    _sb = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -144,7 +149,11 @@ class AutoPaperBroker:
             self.orders.append(order)
 
         logger.info("[broker] Filled %s @ %.2f x%d (id=%s)", ticker, fill_price, shares, trade_id)
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
         self._save_state()
+        if _sb:
+            _sb.insert_trade(position, today_str)
+            _sb.upsert_broker_state(self.capital, self.daily_pnl, self.daily_loss, today_str)
         return {"status": "filled", "fill_price": fill_price, "trade_id": trade_id, "reason": None}
 
     # ──────────────────────────────────────────────────────
@@ -357,7 +366,11 @@ class AutoPaperBroker:
 
         del self.positions[ticker]
         logger.info("[broker] Closed %s @ %.2f reason=%s pnl=%.2f", ticker, fill_price, reason, pnl)
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
         self._save_state()
+        if _sb:
+            _sb.update_trade_close(trade)
+            _sb.upsert_broker_state(self.capital, self.daily_pnl, self.daily_loss, today_str)
         return trade
 
     @staticmethod
@@ -387,6 +400,35 @@ class AutoPaperBroker:
             logger.warning("[broker] _save_state failed: %s", exc)
 
     def _load_state(self) -> None:
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+
+        # ── Try Supabase first ────────────────────────────────────────────────
+        if _sb and _sb.is_available():
+            try:
+                row = _sb.load_broker_state()
+                if row:
+                    self.capital = float(row.get("capital", self.capital))
+                    if row.get("trading_date") == today:
+                        self.daily_pnl  = float(row.get("daily_pnl",  0.0))
+                        self.daily_loss = float(row.get("daily_loss", 0.0))
+                    else:
+                        self.daily_pnl  = 0.0
+                        self.daily_loss = 0.0
+                        logger.info("[broker] New trading day — daily P&L reset (Supabase)")
+
+                trades_today = _sb.load_trades_today(today)
+                if trades_today:
+                    self.trades = trades_today
+
+                logger.info(
+                    "[broker] Restored state from Supabase: capital=₹%.2f daily_pnl=₹%.2f trades_today=%d",
+                    self.capital, self.daily_pnl, len(self.trades),
+                )
+                return
+            except Exception as exc:
+                logger.warning("[broker] Supabase load failed, falling back to file: %s", exc)
+
+        # ── Fall back to local file ───────────────────────────────────────────
         if not os.path.exists(_STATE_FILE):
             logger.info("[broker] No saved state found — starting fresh")
             return
@@ -396,7 +438,6 @@ class AutoPaperBroker:
             self.capital   = float(state.get("capital", self.capital))
             self.positions = state.get("positions", {})
             self.trades    = state.get("trades",    [])
-            today = datetime.now(IST).strftime("%Y-%m-%d")
             if state.get("trading_date") == today:
                 self.daily_pnl  = float(state.get("daily_pnl",  0.0))
                 self.daily_loss = float(state.get("daily_loss", 0.0))
@@ -405,7 +446,7 @@ class AutoPaperBroker:
                 self.daily_loss = 0.0
                 logger.info("[broker] New trading day — daily P&L reset")
             logger.info(
-                "[broker] Restored state: capital=₹%.2f positions=%d daily_pnl=₹%.2f",
+                "[broker] Restored state from file: capital=₹%.2f positions=%d daily_pnl=₹%.2f",
                 self.capital, len(self.positions), self.daily_pnl,
             )
         except Exception as exc:
