@@ -18,9 +18,11 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import pytz
+
 logger = logging.getLogger(__name__)
 
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = pytz.timezone("Asia/Kolkata")
 
 DECISION_CONFIG = {
     "weights": {
@@ -48,7 +50,7 @@ SETUPS: dict[str, dict] = {
     "VWAP_BOUNCE": {
         "required": {
             "price_above_vwap":        True,
-            "price_vs_vwap_pct_max":   0.15,
+            "price_vs_vwap_pct_max":   1.5,   # percentage scale (features compute /vwap*100)
             "volume_ratio_min":        1.2,
             "rsi_min":                 45,
         },
@@ -307,6 +309,13 @@ class IntradayDecisionEngine:
 
         # ── 7. ML confidence gate ─────────────────────────────────────────
         setup_min_conf = SETUPS[setup_type]["min_ml_confidence"]
+        try:
+            from models.intraday_model import intraday_model as _model
+            if not _model.is_trained():
+                setup_min_conf = max(0.0, setup_min_conf - 0.08)
+                logger.info("[decision] untrained model — ML confidence thresholds relaxed for cold start")
+        except Exception:
+            pass
         if prob_up < setup_min_conf:
             result = _hold(
                 f"ML confidence {prob_up:.2f} < {setup_type} threshold {setup_min_conf}",

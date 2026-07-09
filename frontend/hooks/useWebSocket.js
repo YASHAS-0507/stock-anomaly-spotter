@@ -51,10 +51,11 @@ export function useWebSocket() {
           }
 
           // Phase 3: live tick prices from Angel One feed
-          if (msg.type === "live_tick") {
-            const { ticker, price } = msg.data || {};
-            if (ticker && price != null) {
-              setTickerPrices((prev) => ({ ...prev, [ticker]: price }));
+          // Backend sends {"type":"live_prices","data":{"TICKER":price,...}}
+          if (msg.type === "live_prices") {
+            const prices = msg.data || {};
+            if (Object.keys(prices).length > 0) {
+              setTickerPrices((prev) => ({ ...prev, ...prices }));
             }
           }
 
