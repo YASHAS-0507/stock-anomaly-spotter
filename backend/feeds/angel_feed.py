@@ -70,6 +70,12 @@ _MAX_RECONNECT_ATTEMPTS = 3
 # Session cache TTL — Angel One JWTs last 24h; we refresh every 6h for safety
 _TOKEN_TTL = 21600
 
+# Guard against two simultaneous _handle_close() calls each spawning a reconnect loop.
+# Lock is held only during the flag check/set, NOT during the reconnect itself, so the
+# 65s Angel One rate-limit sleep never blocks the lock.
+_reconnect_lock        = threading.Lock()
+_reconnect_in_progress = False
+
 
 # ── Process-wide session cache ─────────────────────────────────────────────────
 
@@ -262,6 +268,7 @@ class AngelOneFeed:
             api_key=self._api_key,
             client_code=self._client_id,
             feed_token=self.feed_token,
+            max_retry_attempt=0,   # disable library reconnect; our _handle_close logic owns reconnects
         )
 
         self._sws.on_open  = self._handle_open
@@ -429,19 +436,28 @@ class AngelOneFeed:
                 pass
 
         if not self._stop_event.is_set():
-            if self._reconnect_attempt >= _MAX_RECONNECT_ATTEMPTS:
-                print(
-                    f"[feed] WS unavailable after {_MAX_RECONNECT_ATTEMPTS} attempts — "
-                    "running on historical fallback only"
-                )
-                logger.warning(
-                    "[angel_feed] Max reconnect attempts (%d) reached — "
-                    "WebSocket disabled for this session; historical REST fallback is active",
-                    _MAX_RECONNECT_ATTEMPTS,
-                )
-                return
-            time.sleep(5)
-            self.reconnect()
+            global _reconnect_in_progress
+            with _reconnect_lock:
+                if _reconnect_in_progress:
+                    logger.warning("[feed] Reconnect already in progress — skipping duplicate close event")
+                    return
+                _reconnect_in_progress = True
+            try:
+                if self._reconnect_attempt >= _MAX_RECONNECT_ATTEMPTS:
+                    print(
+                        f"[feed] WS unavailable after {_MAX_RECONNECT_ATTEMPTS} attempts — "
+                        "running on historical fallback only"
+                    )
+                    logger.warning(
+                        "[angel_feed] Max reconnect attempts (%d) reached — "
+                        "WebSocket disabled for this session; historical REST fallback is active",
+                        _MAX_RECONNECT_ATTEMPTS,
+                    )
+                    return
+                time.sleep(5)
+                self.reconnect()
+            finally:
+                _reconnect_in_progress = False
 
     # ─────────────────────────────────────────────────────
     # Internal helpers
