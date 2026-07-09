@@ -62,6 +62,7 @@ import threading as _threading
 from scheduler.market_scheduler import market_scheduler
 from broker.auto_paper_broker import auto_broker
 from shadow.shadow_manager import shadow_manager
+from tv_signals_store import tv_signals as _tv_signals
 
 # System telemetry
 try:
@@ -1002,6 +1003,45 @@ def regime_matrix():
         return market_scheduler.regime_cache
     except Exception as exc:
         return {"error": str(exc)}
+
+
+@app.post("/api/webhook/tv")
+async def tradingview_webhook(request: Request):
+    """Receive TradingView Pine Script alerts and store as ML features."""
+    try:
+        body     = await request.json()
+        ticker   = str(body.get("ticker", "")).upper().strip()
+        action   = str(body.get("action", "")).upper().strip()
+        price    = float(body.get("price", 0) or 0)
+        strategy = str(body.get("strategy", "unknown"))
+
+        if not ticker:
+            raise HTTPException(status_code=400, detail="ticker is required")
+
+        score = 1.0 if action == "BUY" else (-1.0 if action == "SELL" else 0.0)
+
+        import pytz as _pytz
+        from datetime import datetime as _dt
+        _IST = _pytz.timezone("Asia/Kolkata")
+        _tv_signals[ticker] = {
+            "score":     score,
+            "action":    action,
+            "price":     price,
+            "strategy":  strategy,
+            "timestamp": _dt.now(_IST).isoformat(),
+        }
+        logger.info("[webhook] TV signal: %s %s @ %.2f from %s", ticker, action, price, strategy)
+        return {"status": "ok", "ticker": ticker, "processed": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/webhook/tv/signals")
+def get_tv_signals():
+    """Return all current TradingView signals (for debugging)."""
+    return _tv_signals
 
 
 @app.get("/api/data/source")
