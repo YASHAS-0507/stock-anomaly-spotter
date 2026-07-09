@@ -268,6 +268,7 @@ class AngelOneFeed:
             api_key=self._api_key,
             client_code=self._client_id,
             feed_token=self.feed_token,
+            max_retry_attempt=0,   # disable library reconnect; our _handle_close logic owns reconnects
         )
 
         self._sws.on_open  = self._handle_open
