@@ -10,7 +10,7 @@ Pipeline:
   08:15 → intelligence_scan() — news + Groq analysis
   09:15 → Angel One WebSocket open, on_tick() fires per tick
   09:15+→ on_new_candle()    — 5min candle close triggers full decision pipeline
-  every 7min → intelligence_refresh()
+  every 15min → intelligence_refresh()
   every 1s   → monitor_loop_tick() — SL/TP/time-stop checks + IST-aware EOD triggers
   15:15 → square_off_3_15pm()  (IST-aware, checked in monitor_loop_tick)
   15:30 → post_market_3_30pm() (IST-aware, checked in monitor_loop_tick)
@@ -271,7 +271,7 @@ class MarketScheduler:
             logger.warning("[scheduler] Intelligence scan failed: %s", exc)
 
     def intelligence_refresh(self) -> None:
-        """Re-run intelligence_scan (called every 7 min by scheduler)."""
+        """Re-run intelligence_scan (called every 15 min by scheduler)."""
         self.intelligence_scan()
 
     # ──────────────────────────────────────────────────────
@@ -689,7 +689,7 @@ class MarketScheduler:
 
         # Set up recurring schedule jobs (interval-based only — day.at() would use UTC)
         if _SCHEDULE_OK:
-            schedule.every(7).minutes.do(self.intelligence_refresh)
+            schedule.every(15).minutes.do(self.intelligence_refresh)
             schedule.every(1).seconds.do(self.monitor_loop_tick)
             logger.info("[scheduler] Schedule jobs registered (EOD jobs handled via IST check in monitor_loop_tick)")
 
