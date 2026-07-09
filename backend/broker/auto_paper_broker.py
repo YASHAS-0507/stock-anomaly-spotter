@@ -72,6 +72,7 @@ class AutoPaperBroker:
         signal: dict,
         entry_price: float,
         sizing: dict,
+        features: dict = None,
     ) -> dict:
         """
         Execute a BUY signal from IntradayDecisionEngine.
@@ -152,7 +153,7 @@ class AutoPaperBroker:
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         self._save_state()
         if _sb:
-            _sb.insert_trade(position, today_str)
+            _sb.insert_trade(position, today_str, features=features)
             _sb.upsert_broker_state(self.capital, self.daily_pnl, self.daily_loss, today_str)
         return {"status": "filled", "fill_price": fill_price, "trade_id": trade_id, "reason": None}
 
