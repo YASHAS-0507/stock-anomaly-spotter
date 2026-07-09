@@ -59,8 +59,8 @@ _NSE_EXCHANGE_TYPE = 1
 # LTP subscription mode (least bandwidth)
 _MODE_LTP = 1
 
-# Backoff schedule in seconds
-_BACKOFF = [5, 10, 30]
+# Backoff schedule in seconds — generous gaps so Angel One doesn't rate-limit re-auth
+_BACKOFF = [30, 60, 120]
 
 # Maximum WebSocket reconnect attempts per session.
 # After this many failures the feed gives up and the system runs on
@@ -291,6 +291,16 @@ class AngelOneFeed:
 
         self._sws._on_close = _compat_on_close
 
+        # Suppress the library's built-in reconnect logic entirely.
+        # SmartWebSocketV2._on_error() calls close_connection() even when
+        # max_retry_attempt=0, which can fire _on_close a second time and
+        # spawn a parallel reconnect thread alongside _handle_close's loop.
+        # Replace it with a pure logger so only our _handle_close owns reconnects.
+        def _noop_on_error(wsapp, error):
+            logger.error("[angel_feed] WS error (library reconnect suppressed): %s", error)
+
+        self._sws._on_error = _noop_on_error
+
         self._ws_thread = threading.Thread(
             target=self._run_ws,
             name="angel-ws",
@@ -470,7 +480,18 @@ class AngelOneFeed:
         except Exception as exc:
             logger.error("[angel_feed] WebSocket run error: %s", exc)
             if not self._stop_event.is_set():
-                self.reconnect()
+                # _handle_close fires first for most disconnects; only take the
+                # reconnect here if _handle_close didn't already claim the slot.
+                global _reconnect_in_progress
+                with _reconnect_lock:
+                    if _reconnect_in_progress:
+                        logger.warning("[feed] Reconnect already in progress (_run_ws) — skipping")
+                        return
+                    _reconnect_in_progress = True
+                try:
+                    self.reconnect()
+                finally:
+                    _reconnect_in_progress = False
 
     def _send_subscription(self) -> None:
         """Send subscribe request for all registered tokens (LTP mode, NSE cash segment)."""
