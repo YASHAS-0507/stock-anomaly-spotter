@@ -116,6 +116,14 @@ _DEFAULTS: dict = {
     "price_in_bearish_fvg":      False,
     "nearest_fvg_distance_pct":  0.0,
     "fvg_count":                 0,
+    # ML feature expansion
+    "vwap_deviation_pct":   0.0,   # alias of price_vs_vwap_pct (explicit ML name)
+    "orb_position":         0,     # 1=above, 0=inside, -1=below ORB
+    "volume_ratio_5min":    1.0,   # current 5min vol / 20-bar avg
+    "time_sin":             0.0,   # cyclical time encoding (sin)
+    "time_cos":             1.0,   # cyclical time encoding (cos)
+    "price_vs_prev_high":   0.0,   # % distance from prior day's high
+    "tv_signal_score":      0.0,   # TradingView webhook: +1 BUY, -1 SELL, 0 NEUTRAL
     # Wyckoff (Day 20)
     "wyckoff_range_type":            "NONE",
     "wyckoff_in_range":              False,
@@ -146,6 +154,9 @@ class IntradayFeatures:
         candles_5min: list,
         candles_1min: list,
         current_price: float,
+        prev_day_high: float = 0.0,
+        tv_signals: Optional[dict] = None,
+        ticker: str = "",
     ) -> dict:
         """
         Compute intraday technical features.
@@ -155,13 +166,17 @@ class IntradayFeatures:
         candles_5min  : list of 5-min OHLCV dicts (oldest first)
         candles_1min  : list of 1-min OHLCV dicts (oldest first)
         current_price : latest LTP
+        prev_day_high : prior session high (0.0 = unavailable)
+        tv_signals    : TradingView webhook signal store (ticker → signal dict)
+        ticker        : instrument symbol (for tv_signals lookup)
 
         Returns
         -------
         dict of features — never raises
         """
         try:
-            return self._compute(candles_5min, candles_1min, current_price)
+            return self._compute(candles_5min, candles_1min, current_price,
+                                 prev_day_high, tv_signals, ticker)
         except Exception as exc:
             logger.warning("[features] compute() failed: %s", exc)
             result = dict(_DEFAULTS)
@@ -178,6 +193,9 @@ class IntradayFeatures:
         candles_5min: list,
         candles_1min: list,
         current_price: float,
+        prev_day_high: float = 0.0,
+        tv_signals: Optional[dict] = None,
+        ticker: str = "",
     ) -> dict:
         result: dict = {}
 
@@ -317,6 +335,58 @@ class IntradayFeatures:
         result["minutes_since_open"] = mins_open
         result["trading_window"]     = _trading_window(mins_open)
         result["time_of_day_score"]  = round(_time_score(mins_open), 4)
+
+        # ── ML feature expansion ──────────────────────────────────────────
+
+        # F1: vwap_deviation_pct — explicit ML-facing alias for price_vs_vwap_pct
+        result["vwap_deviation_pct"] = result["price_vs_vwap_pct"]
+
+        # F2: orb_position — 1=above ORB, -1=below ORB, 0=inside
+        _orb_h = result["orb_high"]
+        _orb_l = result["orb_low"]
+        if _orb_h > _orb_l and _orb_h > 0:
+            if price > _orb_h:
+                result["orb_position"] = 1
+            elif price < _orb_l:
+                result["orb_position"] = -1
+            else:
+                result["orb_position"] = 0
+        else:
+            result["orb_position"] = 0
+
+        # F3: volume_ratio_5min — current bar vs rolling 20-bar average
+        if len(volumes_5) >= 2:
+            _hist = volumes_5[-21:-1]
+            _avg  = sum(_hist) / len(_hist) if _hist else 1.0
+            result["volume_ratio_5min"] = round(volumes_5[-1] / _avg if _avg > 0 else 1.0, 3)
+        else:
+            result["volume_ratio_5min"] = 1.0
+
+        # F4: time_sin / time_cos — cyclical encoding (375 min = full trading day)
+        _PERIOD = 375.0
+        result["time_sin"] = round(math.sin(2 * math.pi * max(mins_open, 0) / _PERIOD), 6)
+        result["time_cos"] = round(math.cos(2 * math.pi * max(mins_open, 0) / _PERIOD), 6)
+
+        # F5: price_vs_prev_high — % above/below prior day's high (0.0 when unavailable)
+        result["price_vs_prev_high"] = (
+            round((price - prev_day_high) / prev_day_high * 100, 4) if prev_day_high > 0 else 0.0
+        )
+
+        # F6: tv_signal_score — TradingView webhook score; expires after 15 min
+        tv_score = 0.0
+        if tv_signals and ticker:
+            _sig = tv_signals.get(ticker, {})
+            if _sig:
+                try:
+                    _ts = datetime.fromisoformat(_sig.get("timestamp", ""))
+                    if _ts.tzinfo is None:
+                        _ts = _ts.replace(tzinfo=IST)
+                    _age_mins = (now_ist - _ts.astimezone(IST)).total_seconds() / 60.0
+                    if _age_mins <= 15.0:
+                        tv_score = float(_sig.get("score", 0.0))
+                except Exception:
+                    pass
+        result["tv_signal_score"] = round(tv_score, 4)
 
         return result
 

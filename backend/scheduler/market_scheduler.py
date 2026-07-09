@@ -59,6 +59,7 @@ from broker.auto_paper_broker     import auto_broker
 from shadow.shadow_manager        import shadow_manager
 from expiry.expiry_calendar       import expiry_calendar
 from decay.decay_monitor          import decay_monitor
+from tv_signals_store             import tv_signals as _tv_signals
 
 try:
     import schedule
@@ -370,7 +371,19 @@ class MarketScheduler:
         if current_price <= 0:
             return
 
-        features = self.features_engine.compute(candles_5min, candles_1min, current_price)
+        try:
+            from feeds.data_provider import data_provider as _dp
+            _prev = _dp.get_previous_day_ohlcv(ticker)
+            prev_day_high = float(_prev.get("high", 0) or 0)
+        except Exception:
+            prev_day_high = 0.0
+
+        features = self.features_engine.compute(
+            candles_5min, candles_1min, current_price,
+            prev_day_high=prev_day_high,
+            tv_signals=_tv_signals,
+            ticker=ticker,
+        )
 
         mood   = self.market_mood_cache or {"vix": 15.0, "vix_regime": "NORMAL"}
         regime = self.regime_detector.detect(features, mood, now)

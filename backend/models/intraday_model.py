@@ -46,7 +46,17 @@ FEATURE_COLUMNS = [
     "time_of_day_score",
     "higher_highs",
     "higher_lows",
+    # ML feature expansion
+    "vwap_deviation_pct",
+    "orb_position",
+    "volume_ratio_5min",
+    "time_sin",
+    "time_cos",
+    "price_vs_prev_high",
+    "tv_signal_score",
 ]
+
+logger.info("[model] Feature set: %d features", len(FEATURE_COLUMNS))
 
 
 class IntradayModel:
