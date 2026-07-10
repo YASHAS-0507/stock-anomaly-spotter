@@ -276,6 +276,23 @@ class AngelOneFeed:
         self._sws.on_error = self._handle_error
         self._sws.on_close = self._handle_close
 
+        # websocket-client calls _on_close(wsapp, close_code, close_reason) — 4 args
+        # including `self` — but the library defines _on_close(self, wsapp) expecting
+        # only 2, so it crashes and pong tracking is never cleaned up.
+        # Fix: replace _on_close with a wrapper that accepts the extra args, calls the
+        # original first (preserving pong tracking / library internals), then delegates
+        # to our _handle_close.
+        original_on_close = self._sws._on_close.__func__
+
+        def _fixed_on_close(wsapp, close_code=None, close_reason=None):
+            try:
+                original_on_close(self._sws, wsapp)
+            except Exception as e:
+                logger.warning("[feed] on_close internal: %s", e)
+            self._handle_close(wsapp)
+
+        self._sws._on_close = _fixed_on_close
+
         self._ws_thread = threading.Thread(
             target=self._run_ws,
             name="angel-ws",
