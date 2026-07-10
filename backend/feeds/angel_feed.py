@@ -350,6 +350,7 @@ class AngelOneFeed:
         self._reconnect_attempt = 0
         self._session_tick_count = 0  # reset per-session tick counter
         print("[angel] WebSocket on_open — connection established — waiting for ticks…")
+        logger.info("[feed] _handle_open CALLED — WS handshake complete, sending subscribe...")
         logger.info("[feed] WS open — library heartbeat active at 10s interval, waiting for first tick...")
         if self._subscribed_tokens:
             self._send_subscription()
@@ -463,6 +464,23 @@ class AngelOneFeed:
 
     def _run_ws(self) -> None:
         """Target for the background WebSocket thread."""
+        import socket
+        import ssl
+
+        try:
+            host = "smartapisocket.angelone.in"
+            sock = socket.create_connection((host, 443), timeout=10)
+            context = ssl.create_default_context()
+            ssock = context.wrap_socket(sock, server_hostname=host)
+            logger.info("[feed] TCP+SSL to %s:443 OK — connection accepted at network level", host)
+            ssock.close()
+        except Exception as e:
+            logger.error(
+                "[feed] TCP+SSL to %s:443 FAILED: %s "
+                "— Railway IP may be blocked by Angel One",
+                "smartapisocket.angelone.in", e,
+            )
+
         try:
             self._sws.connect()
         except Exception as exc:
@@ -495,6 +513,7 @@ class AngelOneFeed:
                 mode=_MODE_LTP,
                 token_list=token_list,
             )
+            logger.info("[feed] Subscribe sent for %d tokens", len(token_list))
             print(f"[feed] Subscription ACK — {n} tokens active")
             logger.info("[feed] Subscription ACK for %d tokens", n)
         except Exception as exc:
