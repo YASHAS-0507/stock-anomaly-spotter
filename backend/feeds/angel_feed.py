@@ -276,31 +276,6 @@ class AngelOneFeed:
         self._sws.on_error = self._handle_error
         self._sws.on_close = self._handle_close
 
-        # SmartWebSocketV2._on_close(self, wsapp) only accepts 2 args, but
-        # modern websocket-client calls on_close(ws, close_code, close_reason).
-        # Shadow the class method on this instance with a compat wrapper so the
-        # signature matches and our disconnect/reconnect logic actually fires.
-        _sws_ref = self._sws
-
-        def _compat_on_close(wsapp, close_code=None, close_reason=None):
-            logger.info(
-                "[angel_feed] WS closed — code=%s reason=%s", close_code, close_reason
-            )
-            if _sws_ref.on_close:
-                _sws_ref.on_close(wsapp)
-
-        self._sws._on_close = _compat_on_close
-
-        # Suppress the library's built-in reconnect logic entirely.
-        # SmartWebSocketV2._on_error() calls close_connection() even when
-        # max_retry_attempt=0, which can fire _on_close a second time and
-        # spawn a parallel reconnect thread alongside _handle_close's loop.
-        # Replace it with a pure logger so only our _handle_close owns reconnects.
-        def _noop_on_error(wsapp, error):
-            logger.error("[angel_feed] WS error (library reconnect suppressed): %s", error)
-
-        self._sws._on_error = _noop_on_error
-
         self._ws_thread = threading.Thread(
             target=self._run_ws,
             name="angel-ws",
@@ -375,10 +350,23 @@ class AngelOneFeed:
         self._reconnect_attempt = 0
         self._session_tick_count = 0  # reset per-session tick counter
         print("[angel] WebSocket on_open — connection established — waiting for ticks…")
-        logger.info("[angel_feed] WebSocket connected.")
+        logger.info("[feed] WS open — library heartbeat active at 10s interval, waiting for first tick...")
         if self._subscribed_tokens:
             self._send_subscription()
         self._start_keepalive()
+
+        def _watchdog():
+            time.sleep(60)
+            if self._connected and getattr(self, "_session_tick_count", 0) == 0:
+                msg = (
+                    "[feed] WARNING: 60s elapsed, ticks this session: 0 "
+                    "— heartbeat sending but no market data arriving. "
+                    "Possible cause: market closed or subscription failed."
+                )
+                logger.warning(msg)
+                print(msg)
+
+        threading.Thread(target=_watchdog, daemon=True, name="angel-tick-watchdog").start()
 
     def _handle_data(self, wsapp, message) -> None:
         """
