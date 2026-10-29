@@ -20,3 +20,4 @@ backend/.env
 .DS_Store
 backend/models/*.pkl
 backend/shadow/*.jsonl
+data/
